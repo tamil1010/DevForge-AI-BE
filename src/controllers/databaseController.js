@@ -15,6 +15,8 @@ const verifyOwnership = async (projectId, userId) => {
   return res.rows[0];
 };
 
+// @route POST /api/database/analyze
+// ONE-PROMPT-TO-COMPLETE-DATABASE-DESIGN AUTOMATED PIPELINE
 const analyzeRequirement = asyncHandler(async (req, res) => {
   const { projectId, projectName, requirement, databaseType } = req.body;
   const userId = req.user.id;
@@ -26,16 +28,17 @@ const analyzeRequirement = asyncHandler(async (req, res) => {
     await verifyOwnership(targetProjectId, userId);
   } else {
     const newProj = await db.query(
-      'INSERT INTO projects (user_id, name, description, database_type) VALUES ($1, $2, $3, $4) RETURNING *',
-      [userId, projectName || 'New Database Design', 'AI Database Design', dbType]
+      'INSERT INTO projects (user_id, name, description, database_type, status) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [userId, projectName || 'New Database Design', 'AI One-Prompt Database Design', dbType, 'completed']
     );
     targetProjectId = newProj.rows[0].id;
   }
 
   if (!requirement || requirement.trim().length < 10) {
-    throw new ApiError(400, 'Requirement text must be at least 10 characters long.');
+    throw new ApiError(400, 'Requirement prompt must be at least 10 characters long.');
   }
 
+  // Pipeline Step 1: AI Requirement Analysis (Domain, Entities, Attributes, Relationships, Rules)
   const analysis = await aiService.analyzeRequirement(requirement, dbType);
   const reqJson = JSON.stringify(analysis);
 
@@ -47,6 +50,8 @@ const analyzeRequirement = asyncHandler(async (req, res) => {
     [targetProjectId, requirement, analysis.domain, reqJson]
   );
 
+  // Pipeline Step 2: Populate Entities & Attributes
+  const entitiesForSchema = [];
   if (analysis.entities && analysis.entities.length > 0) {
     await db.query('DELETE FROM entities WHERE project_id = $1', [targetProjectId]);
     await db.query('DELETE FROM relationships WHERE project_id = $1', [targetProjectId]);
@@ -58,6 +63,7 @@ const analyzeRequirement = asyncHandler(async (req, res) => {
       );
       const entId = entRes.rows[0].id;
 
+      const attrsList = [];
       if (ent.attributes) {
         for (let attr of ent.attributes) {
           await db.query(
@@ -65,11 +71,27 @@ const analyzeRequirement = asyncHandler(async (req, res) => {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [entId, attr.name, attr.type, attr.primaryKey, attr.foreignKey, attr.nullable, attr.unique, attr.autoIncrement, attr.defaultValue || null]
           );
+          attrsList.push({
+            name: attr.name,
+            type: attr.type,
+            primaryKey: Boolean(attr.primaryKey),
+            foreignKey: Boolean(attr.foreignKey),
+            nullable: attr.nullable !== undefined ? Boolean(attr.nullable) : !attr.primaryKey,
+            unique: Boolean(attr.unique),
+            autoIncrement: Boolean(attr.autoIncrement),
+            defaultValue: attr.defaultValue || null
+          });
         }
       }
+      entitiesForSchema.push({
+        name: ent.name,
+        attributes: attrsList
+      });
     }
   }
 
+  // Pipeline Step 3: Populate Relationships
+  const relsForSchema = [];
   if (analysis.relationships && analysis.relationships.length > 0) {
     for (let rel of analysis.relationships) {
       const src = rel.source || rel.from;
@@ -79,15 +101,57 @@ const analyzeRequirement = asyncHandler(async (req, res) => {
          VALUES ($1, $2, $3, $4, $5)`,
         [targetProjectId, src, tgt, rel.type, rel.description || '']
       );
+      relsForSchema.push({
+        source: src,
+        target: tgt,
+        type: rel.type,
+        description: rel.description || ''
+      });
     }
   }
 
-  await db.query('UPDATE projects SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', ['analyzed', targetProjectId]);
+  // Pipeline Step 4: Relational Schema Generation (with Junction tables)
+  const schema = schemaService.generateRelationalSchema(entitiesForSchema, relsForSchema);
+  const normalizationStatus = normalizationService.analyzeNormalization(schema);
+
+  await db.query(
+    `INSERT INTO generated_schemas (project_id, schema_json, normalization_status, is_outdated)
+     VALUES ($1, $2, $3, FALSE)
+     ON CONFLICT (project_id)
+     DO UPDATE SET schema_json = EXCLUDED.schema_json, normalization_status = EXCLUDED.normalization_status, is_outdated = FALSE, updated_at = CURRENT_TIMESTAMP`,
+    [targetProjectId, JSON.stringify(schema), JSON.stringify(normalizationStatus)]
+  );
+
+  // Pipeline Step 5: Deterministic SQL Script Generation
+  const sqlResult = sqlGeneratorService.generateSqlScript(schema, dbType);
+  await db.query(
+    `INSERT INTO generated_sql (project_id, ddl_sql, sample_data_sql, dialect, is_outdated)
+     VALUES ($1, $2, $3, $4, FALSE)
+     ON CONFLICT (project_id)
+     DO UPDATE SET ddl_sql = EXCLUDED.ddl_sql, sample_data_sql = EXCLUDED.sample_data_sql, dialect = EXCLUDED.dialect, is_outdated = FALSE, updated_at = CURRENT_TIMESTAMP`,
+    [targetProjectId, sqlResult.ddlSql, sqlResult.sampleDataSql, dbType]
+  );
+
+  // Pipeline Step 6: Database Design Validation Engine
+  const validation = validationService.validateSchemaAndSql(schema, sqlResult.ddlSql);
+  await db.query(
+    `INSERT INTO validation_results (project_id, score, is_valid, issues)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (project_id)
+     DO UPDATE SET score = EXCLUDED.score, is_valid = EXCLUDED.is_valid, issues = EXCLUDED.issues, updated_at = CURRENT_TIMESTAMP`,
+    [targetProjectId, validation.score, validation.isValid ? 1 : 0, JSON.stringify(validation.issues)]
+  );
+
+  await db.query('UPDATE projects SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2', ['completed', targetProjectId]);
 
   res.status(200).json({
     success: true,
     projectId: targetProjectId,
-    analysis
+    analysis,
+    schema,
+    normalizationStatus,
+    generatedSql: sqlResult,
+    validation
   });
 });
 
@@ -97,9 +161,7 @@ const saveEntities = asyncHandler(async (req, res) => {
 
   await verifyOwnership(projectId, userId);
 
-  if (!Array.isArray(entities)) {
-    throw new ApiError(400, 'Entities must be an array.');
-  }
+  if (!Array.isArray(entities)) throw new ApiError(400, 'Entities must be an array.');
 
   await db.query('DELETE FROM entities WHERE project_id = $1', [projectId]);
 
@@ -136,10 +198,7 @@ const saveEntities = asyncHandler(async (req, res) => {
   await db.query('UPDATE generated_schemas SET is_outdated = TRUE WHERE project_id = $1', [projectId]);
   await db.query('UPDATE generated_sql SET is_outdated = TRUE WHERE project_id = $1', [projectId]);
 
-  res.status(200).json({
-    success: true,
-    message: 'Entity model saved.'
-  });
+  res.status(200).json({ success: true, message: 'Entity model saved.' });
 });
 
 const saveRelationships = asyncHandler(async (req, res) => {
@@ -174,10 +233,7 @@ const saveRelationships = asyncHandler(async (req, res) => {
     }
   }
 
-  res.status(200).json({
-    success: true,
-    message: 'Relationships saved.'
-  });
+  res.status(200).json({ success: true, message: 'Relationships saved.' });
 });
 
 const generateSchema = asyncHandler(async (req, res) => {
@@ -221,22 +277,15 @@ const generateSchema = asyncHandler(async (req, res) => {
   const schema = schemaService.generateRelationalSchema(entities, relationships);
   const normalizationStatus = normalizationService.analyzeNormalization(schema);
 
-  const schemaJsonStr = JSON.stringify(schema);
-  const normJsonStr = JSON.stringify(normalizationStatus);
-
   await db.query(
     `INSERT INTO generated_schemas (project_id, schema_json, normalization_status, is_outdated)
      VALUES ($1, $2, $3, FALSE)
      ON CONFLICT (project_id)
      DO UPDATE SET schema_json = EXCLUDED.schema_json, normalization_status = EXCLUDED.normalization_status, is_outdated = FALSE, updated_at = CURRENT_TIMESTAMP`,
-    [projectId, schemaJsonStr, normJsonStr]
+    [projectId, JSON.stringify(schema), JSON.stringify(normalizationStatus)]
   );
 
-  res.status(200).json({
-    success: true,
-    schema,
-    normalizationStatus
-  });
+  res.status(200).json({ success: true, schema, normalizationStatus });
 });
 
 const generateSql = asyncHandler(async (req, res) => {
@@ -247,9 +296,7 @@ const generateSql = asyncHandler(async (req, res) => {
   const targetDialect = dialect || project.database_type || 'PostgreSQL';
 
   const schemaRes = await db.query('SELECT schema_json FROM generated_schemas WHERE project_id = $1', [projectId]);
-  if (schemaRes.rows.length === 0) {
-    throw new ApiError(400, 'Generate relational schema first before generating SQL script.');
-  }
+  if (schemaRes.rows.length === 0) throw new ApiError(400, 'Generate relational schema first.');
 
   const schema = typeof schemaRes.rows[0].schema_json === 'string' ? JSON.parse(schemaRes.rows[0].schema_json) : schemaRes.rows[0].schema_json;
   const sqlResult = sqlGeneratorService.generateSqlScript(schema, targetDialect);
@@ -277,29 +324,23 @@ const validateSchema = asyncHandler(async (req, res) => {
   await verifyOwnership(projectId, userId);
 
   const schemaRes = await db.query('SELECT schema_json FROM generated_schemas WHERE project_id = $1', [projectId]);
-  if (schemaRes.rows.length === 0) {
-    throw new ApiError(400, 'Schema not found for validation.');
-  }
+  if (schemaRes.rows.length === 0) throw new ApiError(400, 'Schema not found.');
 
   const schema = typeof schemaRes.rows[0].schema_json === 'string' ? JSON.parse(schemaRes.rows[0].schema_json) : schemaRes.rows[0].schema_json;
   const sqlRes = await db.query('SELECT ddl_sql FROM generated_sql WHERE project_id = $1', [projectId]);
   const ddlSql = sqlRes.rows[0] ? sqlRes.rows[0].ddl_sql : '';
 
   const validation = validationService.validateSchemaAndSql(schema, ddlSql);
-  const issuesJson = JSON.stringify(validation.issues);
 
   await db.query(
     `INSERT INTO validation_results (project_id, score, is_valid, issues)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (project_id)
      DO UPDATE SET score = EXCLUDED.score, is_valid = EXCLUDED.is_valid, issues = EXCLUDED.issues, updated_at = CURRENT_TIMESTAMP`,
-    [projectId, validation.score, validation.isValid ? 1 : 0, issuesJson]
+    [projectId, validation.score, validation.isValid ? 1 : 0, JSON.stringify(validation.issues)]
   );
 
-  res.status(200).json({
-    success: true,
-    validation
-  });
+  res.status(200).json({ success: true, validation });
 });
 
 const safeAutoFix = asyncHandler(async (req, res) => {
@@ -311,9 +352,7 @@ const safeAutoFix = asyncHandler(async (req, res) => {
   const schemaRes = await db.query('SELECT schema_json FROM generated_schemas WHERE project_id = $1', [projectId]);
   const valRes = await db.query('SELECT issues FROM validation_results WHERE project_id = $1', [projectId]);
 
-  if (schemaRes.rows.length === 0 || valRes.rows.length === 0) {
-    throw new ApiError(400, 'Run schema validation first before applying safe auto fixes.');
-  }
+  if (schemaRes.rows.length === 0 || valRes.rows.length === 0) throw new ApiError(400, 'Run validation first.');
 
   const schema = typeof schemaRes.rows[0].schema_json === 'string' ? JSON.parse(schemaRes.rows[0].schema_json) : schemaRes.rows[0].schema_json;
   const issues = typeof valRes.rows[0].issues === 'string' ? JSON.parse(valRes.rows[0].issues) : valRes.rows[0].issues;
@@ -329,12 +368,7 @@ const safeAutoFix = asyncHandler(async (req, res) => {
     projectId
   ]);
 
-  res.status(200).json({
-    success: true,
-    message: 'Safe auto fixes applied.',
-    schema: fixedSchema,
-    validation: reValidation
-  });
+  res.status(200).json({ success: true, message: 'Safe auto fixes applied.', schema: fixedSchema, validation: reValidation });
 });
 
 const reviewAi = asyncHandler(async (req, res) => {
@@ -348,10 +382,7 @@ const reviewAi = asyncHandler(async (req, res) => {
 
   const reviewResult = await aiService.reviewDatabaseDesign(entitiesRes.rows, relRes.rows, project.database_type);
 
-  res.status(200).json({
-    success: true,
-    suggestions: reviewResult.suggestions || []
-  });
+  res.status(200).json({ success: true, suggestions: reviewResult.suggestions || [] });
 });
 
 const getIndexRecommendations = asyncHandler(async (req, res) => {
@@ -361,17 +392,12 @@ const getIndexRecommendations = asyncHandler(async (req, res) => {
   const project = await verifyOwnership(projectId, userId);
 
   const schemaRes = await db.query('SELECT schema_json FROM generated_schemas WHERE project_id = $1', [projectId]);
-  if (schemaRes.rows.length === 0) {
-    return res.status(200).json({ success: true, recommendations: [] });
-  }
+  if (schemaRes.rows.length === 0) return res.status(200).json({ success: true, recommendations: [] });
 
   const schema = typeof schemaRes.rows[0].schema_json === 'string' ? JSON.parse(schemaRes.rows[0].schema_json) : schemaRes.rows[0].schema_json;
   const recommendations = indexService.generateIndexRecommendations(schema, project.database_type);
 
-  res.status(200).json({
-    success: true,
-    recommendations
-  });
+  res.status(200).json({ success: true, recommendations });
 });
 
 module.exports = {
