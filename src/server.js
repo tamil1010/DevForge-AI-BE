@@ -1,4 +1,9 @@
-require('dotenv').config();
+try {
+  require('dotenv').config();
+} catch (e) {
+  // Dotenv fallback
+}
+
 const app = require('./app');
 const { initDb } = require('./config/database');
 
@@ -6,7 +11,6 @@ const PORT = process.env.PORT || 5000;
 
 const startServer = async () => {
   try {
-    // Initialize Database Connection / Fallback Storage
     await initDb();
 
     app.listen(PORT, () => {
