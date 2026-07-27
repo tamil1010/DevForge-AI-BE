@@ -13,6 +13,7 @@ const {
   deleteAiReview,
   clearAiReviews,
   modifyAi,
+  getModifyDiff,
   getIndexRecommendations
 } = require('../controllers/databaseController');
 const { protect } = require('../middleware/authMiddleware');
@@ -29,6 +30,7 @@ router.post('/safe-autofix', safeAutoFix);
 router.post('/review-ai', reviewAi);
 router.post('/modify-ai', modifyAi);
 router.post('/:projectId/modify-ai', modifyAi);
+router.get('/modify-diff/:projectId', getModifyDiff);
 router.get('/ai-reviews/:projectId', getAiReviews);
 router.delete('/ai-reviews/clear/:projectId', clearAiReviews);
 router.delete('/ai-reviews/:id', deleteAiReview);

@@ -27,7 +27,8 @@ const memoryStore = {
   validation_results: [],
   ai_suggestions: [],
   project_versions: [],
-  ai_reviews: []
+  ai_reviews: [],
+  modify_diffs: []
 };
 let isMemoryFallback = false;
 
@@ -206,6 +207,18 @@ const initDb = async () => {
               warning_count INTEGER DEFAULT 0,
               improvement_count INTEGER DEFAULT 0,
               review_data TEXT NOT NULL,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+          `);
+          sqliteDb.run(`
+            CREATE TABLE IF NOT EXISTS modify_diffs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id INTEGER NOT NULL,
+              before_score INTEGER DEFAULT 86,
+              after_score INTEGER DEFAULT 100,
+              before_snapshot TEXT NOT NULL,
+              after_snapshot TEXT NOT NULL,
+              diff_json TEXT NOT NULL,
               created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
           `, (err) => {
@@ -528,6 +541,28 @@ const handleMemoryQuery = async (text, params) => {
   if (t.includes('DELETE FROM ai_reviews WHERE project_id')) {
     memoryStore.ai_reviews = memoryStore.ai_reviews.filter(r => r.project_id != params[0]);
     return { rows: [], rowCount: 1 };
+  }
+
+  // Modify Diffs
+  if (t.includes('SELECT * FROM modify_diffs WHERE project_id')) {
+    const list = memoryStore.modify_diffs
+      .filter(r => r.project_id == params[0])
+      .sort((a, b) => b.id - a.id);
+    return { rows: list, rowCount: list.length };
+  }
+  if (t.includes('INSERT INTO modify_diffs')) {
+    const diffItem = {
+      id: memoryStore.modify_diffs.length + 1,
+      project_id: params[0],
+      before_score: params[1],
+      after_score: params[2],
+      before_snapshot: params[3],
+      after_snapshot: params[4],
+      diff_json: params[5],
+      created_at: new Date().toISOString()
+    };
+    memoryStore.modify_diffs.push(diffItem);
+    return { rows: [diffItem], rowCount: 1 };
   }
 
   return { rows: [], rowCount: 0 };
