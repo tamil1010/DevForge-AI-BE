@@ -31,6 +31,7 @@ app.get('/api/health', (req, res) => {
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
+app.use('/api/database-projects', projectRoutes);
 app.use('/api/database', databaseRoutes);
 app.use('/api/versions', versionRoutes);
 app.use('/api/users', userRoutes);

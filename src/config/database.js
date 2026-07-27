@@ -26,7 +26,8 @@ const memoryStore = {
   generated_sql: [],
   validation_results: [],
   ai_suggestions: [],
-  project_versions: []
+  project_versions: [],
+  ai_reviews: []
 };
 let isMemoryFallback = false;
 
@@ -191,6 +192,20 @@ const initDb = async () => {
               project_id INTEGER NOT NULL,
               version_number INTEGER NOT NULL,
               snapshot_json TEXT NOT NULL,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+          `);
+          sqliteDb.run(`
+            CREATE TABLE IF NOT EXISTS ai_reviews (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id INTEGER NOT NULL,
+              review_number INTEGER NOT NULL,
+              summary TEXT,
+              total_suggestions INTEGER DEFAULT 0,
+              critical_count INTEGER DEFAULT 0,
+              warning_count INTEGER DEFAULT 0,
+              improvement_count INTEGER DEFAULT 0,
+              review_data TEXT NOT NULL,
               created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
           `, (err) => {
@@ -476,6 +491,43 @@ const handleMemoryQuery = async (text, params) => {
     };
     memoryStore.project_versions.push(vItem);
     return { rows: [vItem], rowCount: 1 };
+  }
+
+  // AI Reviews
+  if (t.includes('SELECT MAX(review_number)')) {
+    const list = memoryStore.ai_reviews.filter(r => r.project_id == params[0]);
+    const maxV = list.reduce((m, r) => Math.max(m, r.review_number || 0), 0);
+    return { rows: [{ max_rev: maxV }], rowCount: 1 };
+  }
+  if (t.includes('SELECT * FROM ai_reviews WHERE project_id')) {
+    const list = memoryStore.ai_reviews
+      .filter(r => r.project_id == params[0])
+      .sort((a, b) => b.review_number - a.review_number || b.id - a.id);
+    return { rows: list, rowCount: list.length };
+  }
+  if (t.includes('INSERT INTO ai_reviews')) {
+    const revItem = {
+      id: memoryStore.ai_reviews.length + 1,
+      project_id: params[0],
+      review_number: params[1],
+      summary: params[2],
+      total_suggestions: params[3],
+      critical_count: params[4],
+      warning_count: params[5],
+      improvement_count: params[6],
+      review_data: params[7],
+      created_at: new Date().toISOString()
+    };
+    memoryStore.ai_reviews.push(revItem);
+    return { rows: [revItem], rowCount: 1 };
+  }
+  if (t.includes('DELETE FROM ai_reviews WHERE id')) {
+    memoryStore.ai_reviews = memoryStore.ai_reviews.filter(r => r.id != params[0]);
+    return { rows: [], rowCount: 1 };
+  }
+  if (t.includes('DELETE FROM ai_reviews WHERE project_id')) {
+    memoryStore.ai_reviews = memoryStore.ai_reviews.filter(r => r.project_id != params[0]);
+    return { rows: [], rowCount: 1 };
   }
 
   return { rows: [], rowCount: 0 };

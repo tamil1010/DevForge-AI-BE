@@ -375,14 +375,352 @@ const reviewAi = asyncHandler(async (req, res) => {
   const { projectId } = req.body;
   const userId = req.user.id;
 
+  if (!projectId) {
+    throw new ApiError(400, 'Project ID is required for AI Review.');
+  }
+
   const project = await verifyOwnership(projectId, userId);
 
-  const entitiesRes = await db.query('SELECT * FROM entities WHERE project_id = $1', [projectId]);
-  const relRes = await db.query('SELECT * FROM relationships WHERE project_id = $1', [projectId]);
+  // Fetch Entities & Attributes
+  const entitiesRes = await db.query('SELECT * FROM entities WHERE project_id = $1 ORDER BY id ASC', [projectId]);
+  const entities = [];
 
-  const reviewResult = await aiService.reviewDatabaseDesign(entitiesRes.rows, relRes.rows, project.database_type);
+  for (let entity of entitiesRes.rows) {
+    const attrRes = await db.query('SELECT * FROM attributes WHERE entity_id = $1 ORDER BY id ASC', [entity.id]);
+    entities.push({
+      name: entity.name,
+      description: entity.description || '',
+      attributes: attrRes.rows.map((a) => ({
+        name: a.name,
+        type: a.data_type,
+        primaryKey: Boolean(a.is_primary_key),
+        foreignKey: Boolean(a.is_foreign_key),
+        nullable: Boolean(a.is_nullable),
+        unique: Boolean(a.is_unique),
+        autoIncrement: Boolean(a.is_auto_increment),
+        defaultValue: a.default_value
+      }))
+    });
+  }
 
-  res.status(200).json({ success: true, suggestions: reviewResult.suggestions || [] });
+  // Fetch Relationships
+  const relRes = await db.query('SELECT * FROM relationships WHERE project_id = $1 ORDER BY id ASC', [projectId]);
+  const relationships = relRes.rows.map((r) => ({
+    source: r.source_entity,
+    target: r.target_entity,
+    type: r.type,
+    sourceColumn: r.source_column,
+    targetColumn: r.target_column,
+    foreignKeyColumn: r.foreign_key_column,
+    onDelete: r.on_delete,
+    onUpdate: r.on_update,
+    description: r.description || ''
+  }));
+
+  // Fetch Schema JSON if available
+  const schemaRes = await db.query('SELECT schema_json FROM generated_schemas WHERE project_id = $1', [projectId]);
+  let schema = null;
+  if (schemaRes.rows.length > 0 && schemaRes.rows[0].schema_json) {
+    schema = typeof schemaRes.rows[0].schema_json === 'string'
+      ? JSON.parse(schemaRes.rows[0].schema_json)
+      : schemaRes.rows[0].schema_json;
+  }
+
+  // Fetch Generated DDL SQL if available
+  const sqlRes = await db.query('SELECT ddl_sql FROM generated_sql WHERE project_id = $1', [projectId]);
+  let ddlSql = sqlRes.rows[0] ? sqlRes.rows[0].ddl_sql : '';
+
+  const databaseDesign = {
+    databaseType: project.database_type || 'PostgreSQL',
+    entities,
+    relationships,
+    schema,
+    ddlSql
+  };
+
+  const reviewResult = await aiService.reviewDatabaseDesign(databaseDesign);
+
+  const summary = reviewResult.summary || 'AI Review completed successfully.';
+  const suggestions = reviewResult.suggestions || [];
+  const totalSuggestions = suggestions.length;
+  const criticalCount = suggestions.filter((s) => s.severity === 'CRITICAL').length;
+  const warningCount = suggestions.filter((s) => s.severity === 'WARNING').length;
+  const improvementCount = suggestions.filter((s) => s.severity === 'IMPROVEMENT').length;
+
+  const maxRes = await db.query(
+    'SELECT MAX(review_number) as max_rev FROM ai_reviews WHERE project_id = $1',
+    [projectId]
+  );
+  const maxRev = maxRes.rows[0] ? (maxRes.rows[0].max_rev || maxRes.rows[0].max_v || 0) : 0;
+  const reviewNumber = parseInt(maxRev, 10) + 1;
+
+  const nowIso = new Date().toISOString();
+  const reviewDataJson = JSON.stringify({ summary, suggestions });
+  const insertRes = await db.query(
+    `INSERT INTO ai_reviews (
+      project_id, review_number, summary, total_suggestions, critical_count, warning_count, improvement_count, review_data, created_at
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, created_at`,
+    [projectId, reviewNumber, summary, totalSuggestions, criticalCount, warningCount, improvementCount, reviewDataJson, nowIso]
+  );
+
+  const insertedRow = insertRes.rows[0] || {};
+  let createdAt = insertedRow.created_at || nowIso;
+  if (createdAt && typeof createdAt === 'string') {
+    let str = createdAt.trim();
+    if (!str.includes('Z') && !str.includes('+')) {
+      str = str.replace(' ', 'T') + 'Z';
+    }
+    createdAt = str;
+  }
+
+  const savedReview = {
+    id: insertedRow.id,
+    projectId: parseInt(projectId, 10),
+    reviewNumber,
+    createdAt,
+    summary,
+    totalSuggestions,
+    criticalCount,
+    warningCount,
+    improvementCount,
+    suggestions
+  };
+
+  res.status(200).json({
+    success: true,
+    summary,
+    suggestions,
+    review: savedReview
+  });
+});
+
+const getAiReviews = asyncHandler(async (req, res) => {
+  const projectId = parseInt(req.params.projectId || req.params.id, 10);
+  const userId = req.user.id;
+
+  await verifyOwnership(projectId, userId);
+
+  const reviewsRes = await db.query(
+    'SELECT * FROM ai_reviews WHERE project_id = $1 ORDER BY review_number DESC, id DESC',
+    [projectId]
+  );
+
+  const reviews = reviewsRes.rows.map((row) => {
+    let parsedData = {};
+    try {
+      parsedData = typeof row.review_data === 'string' ? JSON.parse(row.review_data) : row.review_data;
+    } catch (e) {
+      parsedData = {};
+    }
+    const suggestions = parsedData.suggestions || [];
+    let createdAt = row.created_at;
+    if (createdAt && typeof createdAt === 'string') {
+      let str = createdAt.trim();
+      if (!str.includes('Z') && !str.includes('+')) {
+        str = str.replace(' ', 'T') + 'Z';
+      }
+      createdAt = str;
+    }
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      reviewNumber: row.review_number,
+      createdAt,
+      summary: row.summary || parsedData.summary || '',
+      totalSuggestions: row.total_suggestions !== undefined ? row.total_suggestions : suggestions.length,
+      criticalCount: row.critical_count !== undefined ? row.critical_count : suggestions.filter((s) => s.severity === 'CRITICAL').length,
+      warningCount: row.warning_count !== undefined ? row.warning_count : suggestions.filter((s) => s.severity === 'WARNING').length,
+      improvementCount: row.improvement_count !== undefined ? row.improvement_count : suggestions.filter((s) => s.severity === 'IMPROVEMENT').length,
+      suggestions
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    reviews
+  });
+});
+
+const deleteAiReview = asyncHandler(async (req, res) => {
+  const reviewId = parseInt(req.params.id, 10);
+  const userId = req.user.id;
+
+  const reviewRes = await db.query('SELECT project_id FROM ai_reviews WHERE id = $1', [reviewId]);
+  if (reviewRes.rows.length === 0) {
+    throw new ApiError(404, 'AI Review not found.');
+  }
+
+  const projectId = reviewRes.rows[0].project_id;
+  await verifyOwnership(projectId, userId);
+
+  await db.query('DELETE FROM ai_reviews WHERE id = $1', [reviewId]);
+
+  res.status(200).json({ success: true, message: 'AI Review deleted successfully.' });
+});
+
+const clearAiReviews = asyncHandler(async (req, res) => {
+  const projectId = parseInt(req.params.projectId, 10);
+  const userId = req.user.id;
+
+  await verifyOwnership(projectId, userId);
+
+  await db.query('DELETE FROM ai_reviews WHERE project_id = $1', [projectId]);
+
+  res.status(200).json({ success: true, message: 'All AI Reviews cleared for project.' });
+});
+
+const modifyAi = asyncHandler(async (req, res) => {
+  const { projectId, suggestions } = req.body;
+  const userId = req.user.id;
+
+  if (!projectId) {
+    throw new ApiError(400, 'Project ID is required.');
+  }
+
+  const project = await verifyOwnership(projectId, userId);
+
+  const entitiesRes = await db.query('SELECT * FROM entities WHERE project_id = $1 ORDER BY id ASC', [projectId]);
+  const entities = [];
+
+  for (let entity of entitiesRes.rows) {
+    const attrRes = await db.query('SELECT * FROM attributes WHERE entity_id = $1 ORDER BY id ASC', [entity.id]);
+    entities.push({
+      name: entity.name,
+      description: entity.description || '',
+      attributes: attrRes.rows.map((a) => ({
+        name: a.name,
+        type: a.data_type,
+        primaryKey: Boolean(a.is_primary_key),
+        foreignKey: Boolean(a.is_foreign_key),
+        nullable: Boolean(a.is_nullable),
+        unique: Boolean(a.is_unique),
+        autoIncrement: Boolean(a.is_auto_increment),
+        defaultValue: a.default_value
+      }))
+    });
+  }
+
+  const relRes = await db.query('SELECT * FROM relationships WHERE project_id = $1 ORDER BY id ASC', [projectId]);
+  const relationships = relRes.rows.map((r) => ({
+    source: r.source_entity,
+    target: r.target_entity,
+    type: r.type,
+    sourceColumn: r.source_column,
+    targetColumn: r.target_column,
+    foreignKeyColumn: r.foreign_key_column,
+    onDelete: r.on_delete,
+    onUpdate: r.on_update,
+    description: r.description || ''
+  }));
+
+  const databaseDesign = {
+    databaseType: project.database_type || 'PostgreSQL',
+    entities,
+    relationships
+  };
+
+  const modified = await aiService.modifyDesignWithReview(databaseDesign, suggestions || []);
+
+  await db.query('DELETE FROM entities WHERE project_id = $1', [projectId]);
+  await db.query('DELETE FROM relationships WHERE project_id = $1', [projectId]);
+
+  if (Array.isArray(modified.entities)) {
+    for (let ent of modified.entities) {
+      if (!ent.name || !ent.name.trim()) continue;
+      const entRes = await db.query(
+        'INSERT INTO entities (project_id, name, description) VALUES ($1, $2, $3) RETURNING id',
+        [projectId, ent.name.trim(), ent.description || '']
+      );
+      const entId = entRes.rows[0].id;
+
+      if (Array.isArray(ent.attributes)) {
+        for (let attr of ent.attributes) {
+          if (!attr.name || !attr.name.trim()) continue;
+          await db.query(
+            `INSERT INTO attributes (entity_id, name, data_type, is_primary_key, is_foreign_key, is_nullable, is_unique, is_auto_increment, default_value)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            [
+              entId,
+              attr.name.trim(),
+              attr.type || 'VARCHAR(255)',
+              Boolean(attr.primaryKey),
+              Boolean(attr.foreignKey),
+              Boolean(attr.nullable),
+              Boolean(attr.unique),
+              Boolean(attr.autoIncrement),
+              attr.defaultValue || null
+            ]
+          );
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(modified.relationships)) {
+    for (let rel of modified.relationships) {
+      const src = rel.source || rel.from;
+      const tgt = rel.target || rel.to;
+      if (!src || !tgt || !rel.type) continue;
+      await db.query(
+        `INSERT INTO relationships (project_id, source_entity, target_entity, type, source_column, target_column, foreign_key_column, on_delete, on_update, description)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          projectId,
+          src,
+          tgt,
+          rel.type,
+          rel.sourceColumn || null,
+          rel.targetColumn || null,
+          rel.foreignKeyColumn || null,
+          rel.onDelete || 'RESTRICT',
+          rel.onUpdate || 'CASCADE',
+          rel.description || ''
+        ]
+      );
+    }
+  }
+
+  const schema = schemaService.generateRelationalSchema(modified.entities, modified.relationships);
+  const normalizationStatus = normalizationService.analyzeNormalization(schema);
+
+  await db.query(
+    `INSERT INTO generated_schemas (project_id, schema_json, normalization_status, is_outdated)
+     VALUES ($1, $2, $3, FALSE)
+     ON CONFLICT (project_id)
+     DO UPDATE SET schema_json = EXCLUDED.schema_json, normalization_status = EXCLUDED.normalization_status, is_outdated = FALSE, updated_at = CURRENT_TIMESTAMP`,
+    [projectId, JSON.stringify(schema), JSON.stringify(normalizationStatus)]
+  );
+
+  const dbType = project.database_type || 'PostgreSQL';
+  const sqlResult = sqlGeneratorService.generateSqlScript(schema, dbType);
+
+  await db.query(
+    `INSERT INTO generated_sql (project_id, ddl_sql, sample_data_sql, dialect, is_outdated)
+     VALUES ($1, $2, $3, $4, FALSE)
+     ON CONFLICT (project_id)
+     DO UPDATE SET ddl_sql = EXCLUDED.ddl_sql, sample_data_sql = EXCLUDED.sample_data_sql, dialect = EXCLUDED.dialect, is_outdated = FALSE, updated_at = CURRENT_TIMESTAMP`,
+    [projectId, sqlResult.ddlSql, sqlResult.sampleDataSql, dbType]
+  );
+
+  const validation = validationService.validateSchemaAndSql(schema, sqlResult.ddlSql);
+
+  await db.query(
+    `INSERT INTO validation_results (project_id, score, is_valid, issues)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (project_id)
+     DO UPDATE SET score = EXCLUDED.score, is_valid = EXCLUDED.is_valid, issues = EXCLUDED.issues, updated_at = CURRENT_TIMESTAMP`,
+    [projectId, validation.score, validation.isValid ? 1 : 0, JSON.stringify(validation.issues)]
+  );
+
+  res.status(200).json({
+    success: true,
+    message: 'Database design modified & updated based on AI suggestions.',
+    entities: modified.entities,
+    relationships: modified.relationships,
+    schema,
+    generatedSql: sqlResult,
+    validation
+  });
 });
 
 const getIndexRecommendations = asyncHandler(async (req, res) => {
@@ -409,5 +747,9 @@ module.exports = {
   validateSchema,
   safeAutoFix,
   reviewAi,
+  getAiReviews,
+  deleteAiReview,
+  clearAiReviews,
+  modifyAi,
   getIndexRecommendations
 };
