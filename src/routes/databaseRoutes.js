@@ -14,7 +14,9 @@ const {
   clearAiReviews,
   modifyAi,
   getModifyDiff,
-  getIndexRecommendations
+  getIndexRecommendations,
+  saveIndexState,
+  runAiIndexAnalysis
 } = require('../controllers/databaseController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -35,5 +37,7 @@ router.get('/ai-reviews/:projectId', getAiReviews);
 router.delete('/ai-reviews/clear/:projectId', clearAiReviews);
 router.delete('/ai-reviews/:id', deleteAiReview);
 router.get('/indexes/:projectId', getIndexRecommendations);
+router.post('/indexes/save', saveIndexState);
+router.post('/indexes/analyze-ai', runAiIndexAnalysis);
 
 module.exports = router;

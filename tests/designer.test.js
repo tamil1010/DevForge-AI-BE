@@ -48,4 +48,11 @@ test('E-Commerce Relational Schema & SQL Generation Test', () => {
   // Test Validation
   const val = validationService.validateSchemaAndSql(schema, pgSql.ddlSql);
   assert.strictEqual(val.isValid, true, 'Schema should be valid');
+
+  // Test Index Service Recommendations
+  const indexService = require('../src/services/indexService');
+  const indexResult = indexService.generateIndexRecommendations(schema, 'PostgreSQL');
+  assert.ok(indexResult.summary.performanceScore >= 0, 'Performance score should be calculated');
+  assert.ok(indexResult.existingIndexes.length > 0, 'Primary key indexes should be detected');
+  assert.ok(indexResult.recommendations.some(r => r.category === 'Foreign Key'), 'Foreign key index recommendation should exist');
 });

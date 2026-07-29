@@ -28,7 +28,8 @@ const memoryStore = {
   ai_suggestions: [],
   project_versions: [],
   ai_reviews: [],
-  modify_diffs: []
+  modify_diffs: [],
+  index_recommendations: []
 };
 let isMemoryFallback = false;
 
@@ -220,6 +221,19 @@ const initDb = async () => {
               after_snapshot TEXT NOT NULL,
               diff_json TEXT NOT NULL,
               created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+          `);
+          sqliteDb.run(`
+            CREATE TABLE IF NOT EXISTS index_recommendations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id INTEGER UNIQUE NOT NULL,
+              recommendations_json TEXT NOT NULL,
+              applied_indexes_json TEXT,
+              ignored_indexes_json TEXT,
+              ai_analysis_json TEXT,
+              is_outdated INTEGER DEFAULT 0,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
           `, (err) => {
             if (err) reject(err);

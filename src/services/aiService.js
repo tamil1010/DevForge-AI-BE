@@ -541,8 +541,101 @@ const fallbackModifyDesign = (databaseDesign, suggestions = []) => {
   return { entities, relationships };
 };
 
+const analyzeIndexesWithAi = async (schema, dialect = 'PostgreSQL', domain = '') => {
+  const provider = process.env.AI_PROVIDER || 'gemini';
+  const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
+
+  if (provider === 'gemini' && apiKey && schema && schema.tables && schema.tables.length > 0) {
+    try {
+      const prompt = `
+You are a Principal Database Performance Engineer. Analyze the following relational database schema for dialect ${dialect} in the ${domain || 'General Software System'} domain.
+Identify critical query bottlenecks, high-cardinality search columns, composite multi-column query patterns, and heavy JOIN relationships that will benefit from B-Tree or Composite indexes as table size scales to millions of rows.
+
+Database Schema:
+${JSON.stringify(schema, null, 2)}
+
+Respond ONLY with valid, unformatted JSON matching this exact structure:
+{
+  "aiSuggestions": [
+    {
+      "table": "orders",
+      "columns": ["customer_id", "order_date"],
+      "category": "Composite",
+      "priority": "HIGH | MEDIUM | LOW",
+      "estimatedBenefit": "High | Medium | Low",
+      "reason": "Detailed explanation of why this index improves query speed as table grows.",
+      "sql": "CREATE INDEX idx_orders_customer_date ON orders(customer_id, order_date);"
+    }
+  ],
+  "aiSummary": "Comprehensive summary of AI database index performance analysis."
+}
+`;
+      const responseText = await executeGeminiPrompt(prompt);
+      const cleanedJson = cleanJsonResponse(responseText);
+      const parsed = JSON.parse(cleanedJson);
+      if (parsed && Array.isArray(parsed.aiSuggestions)) {
+        return parsed;
+      }
+    } catch (err) {
+      console.warn('Gemini AI index analysis failed, falling back to heuristic AI engine:', err.message);
+    }
+  }
+
+  return fallbackAnalyzeIndexes(schema, dialect, domain);
+};
+
+const fallbackAnalyzeIndexes = (schema, dialect = 'PostgreSQL', domain = '') => {
+  const aiSuggestions = [];
+  if (!schema || !schema.tables) {
+    return {
+      aiSuggestions: [],
+      aiSummary: 'No database tables found in schema to analyze.'
+    };
+  }
+
+  schema.tables.forEach((table) => {
+    const tableName = table.name;
+    const lowerTable = tableName.toLowerCase();
+    const cols = table.columns || [];
+
+    const fkCols = cols.filter(c => c.isForeignKey);
+    const dateCol = cols.find(c => c.name.toLowerCase().includes('date') || c.name.toLowerCase().includes('created_at'));
+    const statusCol = cols.find(c => c.name.toLowerCase().includes('status'));
+
+    if (fkCols.length > 0 && dateCol) {
+      const fk = fkCols[0];
+      aiSuggestions.push({
+        table: tableName,
+        columns: [fk.name, dateCol.name],
+        category: 'Composite',
+        priority: 'HIGH',
+        estimatedBenefit: 'High',
+        reason: `The ${tableName} table is expected to grow significantly. Indexing ${fk.name} and ${dateCol.name} together will optimize transaction history lookups and dashboard reporting.`,
+        sql: `CREATE INDEX idx_${lowerTable}_${fk.name.toLowerCase()}_${dateCol.name.toLowerCase()} ON ${tableName}(${fk.name}, ${dateCol.name});`
+      });
+    } else if (fkCols.length > 0 && statusCol) {
+      const fk = fkCols[0];
+      aiSuggestions.push({
+        table: tableName,
+        columns: [fk.name, statusCol.name],
+        category: 'Composite',
+        priority: 'HIGH',
+        estimatedBenefit: 'High',
+        reason: `High volume queries in ${tableName} will filter records by ${fk.name} and state ${statusCol.name}. Composite index prevents scanning unindexed status rows.`,
+        sql: `CREATE INDEX idx_${lowerTable}_${fk.name.toLowerCase()}_${statusCol.name.toLowerCase()} ON ${tableName}(${fk.name}, ${statusCol.name});`
+      });
+    }
+  });
+
+  return {
+    aiSuggestions,
+    aiSummary: `AI schema analysis evaluated ${schema.tables.length} tables in the ${domain || 'database'} domain. Recommended ${aiSuggestions.length} composite indexing strategy for scaling high-frequency queries.`
+  };
+};
+
 module.exports = {
   analyzeRequirement,
   reviewDatabaseDesign,
-  modifyDesignWithReview
+  modifyDesignWithReview,
+  analyzeIndexesWithAi
 };

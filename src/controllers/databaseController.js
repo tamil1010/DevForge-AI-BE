@@ -876,12 +876,171 @@ const getIndexRecommendations = asyncHandler(async (req, res) => {
   const project = await verifyOwnership(projectId, userId);
 
   const schemaRes = await db.query('SELECT schema_json FROM generated_schemas WHERE project_id = $1', [projectId]);
-  if (schemaRes.rows.length === 0) return res.status(200).json({ success: true, recommendations: [] });
+  if (schemaRes.rows.length === 0) {
+    return res.status(200).json({
+      success: true,
+      recommendations: [],
+      existingIndexes: [],
+      summary: {
+        totalTables: 0,
+        existingIndexes: 0,
+        recommendedIndexes: 0,
+        performanceScore: 100,
+        scoreLabel: 'Excellent',
+        breakdown: { pk: 100, fk: 100, search: 100, composite: 100 }
+      },
+      aiAnalysis: null,
+      isOutdated: false
+    });
+  }
 
   const schema = typeof schemaRes.rows[0].schema_json === 'string' ? JSON.parse(schemaRes.rows[0].schema_json) : schemaRes.rows[0].schema_json;
-  const recommendations = indexService.generateIndexRecommendations(schema, project.database_type);
 
-  res.status(200).json({ success: true, recommendations });
+  let appliedIndexes = [];
+  let ignoredIndexes = [];
+  let aiAnalysis = null;
+  let isOutdated = false;
+
+  try {
+    const stateRes = await db.query('SELECT applied_indexes_json, ignored_indexes_json, ai_analysis_json, is_outdated FROM index_recommendations WHERE project_id = $1', [projectId]);
+    if (stateRes.rows.length > 0) {
+      const row = stateRes.rows[0];
+      if (row.applied_indexes_json) appliedIndexes = typeof row.applied_indexes_json === 'string' ? JSON.parse(row.applied_indexes_json) : row.applied_indexes_json;
+      if (row.ignored_indexes_json) ignoredIndexes = typeof row.ignored_indexes_json === 'string' ? JSON.parse(row.ignored_indexes_json) : row.ignored_indexes_json;
+      if (row.ai_analysis_json) aiAnalysis = typeof row.ai_analysis_json === 'string' ? JSON.parse(row.ai_analysis_json) : row.ai_analysis_json;
+      isOutdated = Boolean(row.is_outdated);
+    }
+  } catch (e) {
+    console.warn('Could not read index_recommendations table state:', e.message);
+  }
+
+  const result = indexService.generateIndexRecommendations(
+    schema,
+    project.database_type,
+    appliedIndexes,
+    ignoredIndexes,
+    aiAnalysis?.aiSuggestions || []
+  );
+
+  res.status(200).json({
+    success: true,
+    recommendations: result.recommendations,
+    existingIndexes: result.existingIndexes,
+    allRecommendations: result.allRecommendations,
+    summary: result.summary,
+    aiAnalysis,
+    isOutdated
+  });
+});
+
+const saveIndexState = asyncHandler(async (req, res) => {
+  const { projectId, appliedIndexes = [], ignoredIndexes = [] } = req.body;
+  const userId = req.user.id;
+
+  const project = await verifyOwnership(projectId, userId);
+
+  const schemaRes = await db.query('SELECT schema_json FROM generated_schemas WHERE project_id = $1', [projectId]);
+  if (schemaRes.rows.length === 0) throw new ApiError(404, 'Generated schema not found for this project.');
+
+  const schema = typeof schemaRes.rows[0].schema_json === 'string' ? JSON.parse(schemaRes.rows[0].schema_json) : schemaRes.rows[0].schema_json;
+
+  let aiAnalysis = null;
+  const existingRes = await db.query('SELECT ai_analysis_json FROM index_recommendations WHERE project_id = $1', [projectId]);
+  if (existingRes.rows.length > 0 && existingRes.rows[0].ai_analysis_json) {
+    aiAnalysis = typeof existingRes.rows[0].ai_analysis_json === 'string' ? JSON.parse(existingRes.rows[0].ai_analysis_json) : existingRes.rows[0].ai_analysis_json;
+  }
+
+  const appliedJson = JSON.stringify(appliedIndexes);
+  const ignoredJson = JSON.stringify(ignoredIndexes);
+  const aiJson = aiAnalysis ? JSON.stringify(aiAnalysis) : null;
+
+  if (existingRes.rows.length === 0) {
+    await db.query(
+      'INSERT INTO index_recommendations (project_id, recommendations_json, applied_indexes_json, ignored_indexes_json, ai_analysis_json, is_outdated) VALUES ($1, $2, $3, $4, $5, 0)',
+      [projectId, JSON.stringify([]), appliedJson, ignoredJson, aiJson]
+    );
+  } else {
+    await db.query(
+      'UPDATE index_recommendations SET applied_indexes_json = $1, ignored_indexes_json = $2, is_outdated = 0, updated_at = CURRENT_TIMESTAMP WHERE project_id = $3',
+      [appliedJson, ignoredJson, projectId]
+    );
+  }
+
+  const result = indexService.generateIndexRecommendations(
+    schema,
+    project.database_type,
+    appliedIndexes,
+    ignoredIndexes,
+    aiAnalysis?.aiSuggestions || []
+  );
+
+  res.status(200).json({
+    success: true,
+    recommendations: result.recommendations,
+    existingIndexes: result.existingIndexes,
+    allRecommendations: result.allRecommendations,
+    summary: result.summary,
+    aiAnalysis,
+    isOutdated: false
+  });
+});
+
+const runAiIndexAnalysis = asyncHandler(async (req, res) => {
+  const { projectId } = req.body;
+  const userId = req.user.id;
+
+  const project = await verifyOwnership(projectId, userId);
+
+  const schemaRes = await db.query('SELECT schema_json FROM generated_schemas WHERE project_id = $1', [projectId]);
+  if (schemaRes.rows.length === 0) throw new ApiError(404, 'Generated schema not found for this project.');
+
+  const schema = typeof schemaRes.rows[0].schema_json === 'string' ? JSON.parse(schemaRes.rows[0].schema_json) : schemaRes.rows[0].schema_json;
+
+  let domain = '';
+  const reqRes = await db.query('SELECT domain FROM requirements WHERE project_id = $1', [projectId]);
+  if (reqRes.rows.length > 0) domain = reqRes.rows[0].domain || '';
+
+  const aiResult = await aiService.analyzeIndexesWithAi(schema, project.database_type, domain);
+
+  let appliedIndexes = [];
+  let ignoredIndexes = [];
+  const stateRes = await db.query('SELECT applied_indexes_json, ignored_indexes_json FROM index_recommendations WHERE project_id = $1', [projectId]);
+  if (stateRes.rows.length > 0) {
+    const row = stateRes.rows[0];
+    if (row.applied_indexes_json) appliedIndexes = typeof row.applied_indexes_json === 'string' ? JSON.parse(row.applied_indexes_json) : row.applied_indexes_json;
+    if (row.ignored_indexes_json) ignoredIndexes = typeof row.ignored_indexes_json === 'string' ? JSON.parse(row.ignored_indexes_json) : row.ignored_indexes_json;
+  }
+
+  const aiJson = JSON.stringify(aiResult);
+  if (stateRes.rows.length === 0) {
+    await db.query(
+      'INSERT INTO index_recommendations (project_id, recommendations_json, applied_indexes_json, ignored_indexes_json, ai_analysis_json, is_outdated) VALUES ($1, $2, $3, $4, $5, 0)',
+      [projectId, JSON.stringify([]), JSON.stringify(appliedIndexes), JSON.stringify(ignoredIndexes), aiJson]
+    );
+  } else {
+    await db.query(
+      'UPDATE index_recommendations SET ai_analysis_json = $1, is_outdated = 0, updated_at = CURRENT_TIMESTAMP WHERE project_id = $2',
+      [aiJson, projectId]
+    );
+  }
+
+  const result = indexService.generateIndexRecommendations(
+    schema,
+    project.database_type,
+    appliedIndexes,
+    ignoredIndexes,
+    aiResult?.aiSuggestions || []
+  );
+
+  res.status(200).json({
+    success: true,
+    recommendations: result.recommendations,
+    existingIndexes: result.existingIndexes,
+    allRecommendations: result.allRecommendations,
+    summary: result.summary,
+    aiAnalysis: aiResult,
+    isOutdated: false
+  });
 });
 
 module.exports = {
@@ -898,5 +1057,7 @@ module.exports = {
   clearAiReviews,
   modifyAi,
   getModifyDiff,
-  getIndexRecommendations
+  getIndexRecommendations,
+  saveIndexState,
+  runAiIndexAnalysis
 };
