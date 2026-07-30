@@ -55,4 +55,10 @@ test('E-Commerce Relational Schema & SQL Generation Test', () => {
   assert.ok(indexResult.summary.performanceScore >= 0, 'Performance score should be calculated');
   assert.ok(indexResult.existingIndexes.length > 0, 'Primary key indexes should be detected');
   assert.ok(indexResult.recommendations.some(r => r.category === 'Foreign Key'), 'Foreign key index recommendation should exist');
+
+  // Test Version Service Comparison
+  const versionService = require('../src/services/versionService');
+  const versionDiff = versionService.compareVersions({ schema }, { schema });
+  assert.ok(Array.isArray(versionDiff.addedTables), 'addedTables should be an array');
+  assert.strictEqual(versionDiff.addedTables.length, 0, 'No tables should differ for identical snapshots');
 });
