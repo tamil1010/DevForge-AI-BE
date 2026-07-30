@@ -8,12 +8,45 @@ try {
   sqlite3 = require('sqlite3').verbose();
 } catch (e) {}
 
+let mongoose = null;
+try {
+  mongoose = require('mongoose');
+} catch (e) {}
+
 const path = require('path');
 const fs = require('fs');
 
 let pgPool = null;
 let sqliteDb = null;
 let usePg = false;
+let useMongo = false;
+
+// Mongoose Schemas & Models for Flexible MongoDB Storage
+const DevForgeUserSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, full_name: String, email: String, password_hash: String }, { timestamps: true, strict: false });
+const DevForgeProjectSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, user_id: mongoose.Schema.Types.Mixed, name: String, description: String, database_type: String, status: String }, { timestamps: true, strict: false });
+const DevForgeRequirementSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, raw_text: String, domain: String, analysis_json: mongoose.Schema.Types.Mixed }, { timestamps: true, strict: false });
+const DevForgeEntitySchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, name: String, description: String }, { timestamps: true, strict: false });
+const DevForgeAttributeSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, entity_id: mongoose.Schema.Types.Mixed, name: String, data_type: String, is_primary_key: Boolean, is_foreign_key: Boolean, is_nullable: Boolean, is_unique: Boolean, auto_increment: Boolean, foreign_key_table: String, foreign_key_column: String }, { timestamps: true, strict: false });
+const DevForgeRelationshipSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, source_entity_id: mongoose.Schema.Types.Mixed, target_entity_id: mongoose.Schema.Types.Mixed, relationship_type: String, description: String }, { timestamps: true, strict: false });
+const DevForgeGeneratedSchemaSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, schema_json: mongoose.Schema.Types.Mixed, version: mongoose.Schema.Types.Mixed, normalization_status: mongoose.Schema.Types.Mixed }, { timestamps: true, strict: false });
+const DevForgeGeneratedSqlSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, ddl_sql: String, sample_data_sql: String, dialect: String, is_outdated: Boolean }, { timestamps: true, strict: false });
+const DevForgeValidationResultSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, score: mongoose.Schema.Types.Mixed, is_valid: Boolean, issues: mongoose.Schema.Types.Mixed }, { timestamps: true, strict: false });
+const DevForgeProjectVersionSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, version_number: mongoose.Schema.Types.Mixed, snapshot_json: mongoose.Schema.Types.Mixed }, { timestamps: true, strict: false });
+const DevForgeAiReviewSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, review_number: mongoose.Schema.Types.Mixed, summary: String, total_suggestions: mongoose.Schema.Types.Mixed, critical_count: mongoose.Schema.Types.Mixed, warning_count: mongoose.Schema.Types.Mixed, improvement_count: mongoose.Schema.Types.Mixed, review_data: mongoose.Schema.Types.Mixed }, { timestamps: true, strict: false });
+const DevForgeModifyDiffSchema = new mongoose.Schema({ id: mongoose.Schema.Types.Mixed, project_id: mongoose.Schema.Types.Mixed, before_score: mongoose.Schema.Types.Mixed, after_score: mongoose.Schema.Types.Mixed, before_snapshot: mongoose.Schema.Types.Mixed, after_snapshot: mongoose.Schema.Types.Mixed, diff_json: mongoose.Schema.Types.Mixed }, { timestamps: true, strict: false });
+
+const DevForgeUser = mongoose ? (mongoose.models.DevForgeUser || mongoose.model('DevForgeUser', DevForgeUserSchema)) : null;
+const DevForgeProject = mongoose ? (mongoose.models.DevForgeProject || mongoose.model('DevForgeProject', DevForgeProjectSchema)) : null;
+const DevForgeRequirement = mongoose ? (mongoose.models.DevForgeRequirement || mongoose.model('DevForgeRequirement', DevForgeRequirementSchema)) : null;
+const DevForgeEntity = mongoose ? (mongoose.models.DevForgeEntity || mongoose.model('DevForgeEntity', DevForgeEntitySchema)) : null;
+const DevForgeAttribute = mongoose ? (mongoose.models.DevForgeAttribute || mongoose.model('DevForgeAttribute', DevForgeAttributeSchema)) : null;
+const DevForgeRelationship = mongoose ? (mongoose.models.DevForgeRelationship || mongoose.model('DevForgeRelationship', DevForgeRelationshipSchema)) : null;
+const DevForgeGeneratedSchema = mongoose ? (mongoose.models.DevForgeGeneratedSchema || mongoose.model('DevForgeGeneratedSchema', DevForgeGeneratedSchemaSchema)) : null;
+const DevForgeGeneratedSql = mongoose ? (mongoose.models.DevForgeGeneratedSql || mongoose.model('DevForgeGeneratedSql', DevForgeGeneratedSqlSchema)) : null;
+const DevForgeValidationResult = mongoose ? (mongoose.models.DevForgeValidationResult || mongoose.model('DevForgeValidationResult', DevForgeValidationResultSchema)) : null;
+const DevForgeProjectVersion = mongoose ? (mongoose.models.DevForgeProjectVersion || mongoose.model('DevForgeProjectVersion', DevForgeProjectVersionSchema)) : null;
+const DevForgeAiReview = mongoose ? (mongoose.models.DevForgeAiReview || mongoose.model('DevForgeAiReview', DevForgeAiReviewSchema)) : null;
+const DevForgeModifyDiff = mongoose ? (mongoose.models.DevForgeModifyDiff || mongoose.model('DevForgeModifyDiff', DevForgeModifyDiffSchema)) : null;
 
 const memoryStore = {
   users: [],
@@ -33,7 +66,113 @@ const memoryStore = {
 };
 let isMemoryFallback = false;
 
+const loadFromMongo = async () => {
+  if (!useMongo || !mongoose) return;
+  try {
+    const users = await DevForgeUser.find({});
+    if (users.length > 0) memoryStore.users = users.map(u => u.toObject());
+
+    const projects = await DevForgeProject.find({});
+    if (projects.length > 0) memoryStore.projects = projects.map(p => p.toObject());
+
+    const reqs = await DevForgeRequirement.find({});
+    if (reqs.length > 0) memoryStore.requirements = reqs.map(r => r.toObject());
+
+    const ents = await DevForgeEntity.find({});
+    if (ents.length > 0) memoryStore.entities = ents.map(e => e.toObject());
+
+    const attrs = await DevForgeAttribute.find({});
+    if (attrs.length > 0) memoryStore.attributes = attrs.map(a => a.toObject());
+
+    const rels = await DevForgeRelationship.find({});
+    if (rels.length > 0) memoryStore.relationships = rels.map(r => r.toObject());
+
+    const schemas = await DevForgeGeneratedSchema.find({});
+    if (schemas.length > 0) memoryStore.generated_schemas = schemas.map(s => s.toObject());
+
+    const sqls = await DevForgeGeneratedSql.find({});
+    if (sqls.length > 0) memoryStore.generated_sql = sqls.map(s => s.toObject());
+
+    const vals = await DevForgeValidationResult.find({});
+    if (vals.length > 0) memoryStore.validation_results = vals.map(v => v.toObject());
+
+    const vers = await DevForgeProjectVersion.find({});
+    if (vers.length > 0) memoryStore.project_versions = vers.map(v => v.toObject());
+
+    const revs = await DevForgeAiReview.find({});
+    if (revs.length > 0) memoryStore.ai_reviews = revs.map(r => r.toObject());
+
+    const diffs = await DevForgeModifyDiff.find({});
+    if (diffs.length > 0) memoryStore.modify_diffs = diffs.map(d => d.toObject());
+
+    console.log(`Loaded ${projects.length} database projects from MongoDB Cluster.`);
+  } catch (err) {
+    console.warn('Error loading initial data from MongoDB:', err.message);
+  }
+};
+
+const syncMongoQuery = async (text, params) => {
+  if (!useMongo || !mongoose) return;
+  try {
+    const t = text.trim();
+    if (t.includes('INSERT INTO users')) {
+      const id = params[3] || Date.now();
+      await DevForgeUser.findOneAndUpdate({ email: params[1] }, { id, full_name: params[0], email: params[1], password_hash: params[2] }, { upsert: true });
+    } else if (t.includes('INSERT INTO projects')) {
+      await DevForgeProject.create({ id: params[4] || Date.now(), user_id: params[0], name: params[1], description: params[2], database_type: params[3] || 'PostgreSQL', status: 'draft' });
+    } else if (t.includes('UPDATE projects SET status')) {
+      await DevForgeProject.updateOne({ id: params[1] }, { status: params[0] });
+    } else if (t.includes('UPDATE projects SET name')) {
+      await DevForgeProject.updateOne({ id: params[2] }, { name: params[0], description: params[1] });
+    } else if (t.includes('DELETE FROM projects WHERE id')) {
+      await DevForgeProject.deleteOne({ id: params[0] });
+      await DevForgeRequirement.deleteOne({ project_id: params[0] });
+      await DevForgeEntity.deleteMany({ project_id: params[0] });
+      await DevForgeGeneratedSchema.deleteOne({ project_id: params[0] });
+      await DevForgeGeneratedSql.deleteOne({ project_id: params[0] });
+      await DevForgeValidationResult.deleteOne({ project_id: params[0] });
+      await DevForgeProjectVersion.deleteMany({ project_id: params[0] });
+      await DevForgeAiReview.deleteMany({ project_id: params[0] });
+      await DevForgeModifyDiff.deleteMany({ project_id: params[0] });
+    } else if (t.includes('INSERT INTO requirements')) {
+      await DevForgeRequirement.findOneAndUpdate({ project_id: params[0] }, { id: Date.now(), project_id: params[0], raw_text: params[1], domain: params[2], analysis_json: params[3] }, { upsert: true });
+    } else if (t.includes('INSERT INTO entities')) {
+      await DevForgeEntity.create({ id: Date.now() + Math.random(), project_id: params[0], name: params[1], description: params[2] });
+    } else if (t.includes('DELETE FROM entities WHERE project_id')) {
+      await DevForgeEntity.deleteMany({ project_id: params[0] });
+    } else if (t.includes('UPDATE generated_schemas SET schema_json')) {
+      await DevForgeGeneratedSchema.updateOne({ project_id: params[1] }, { schema_json: params[0] });
+    } else if (t.includes('INSERT INTO generated_schemas')) {
+      await DevForgeGeneratedSchema.findOneAndUpdate({ project_id: params[0] }, { id: Date.now(), project_id: params[0], schema_json: params[1], normalization_status: params[2] }, { upsert: true });
+    } else if (t.includes('INSERT INTO generated_sql')) {
+      await DevForgeGeneratedSql.findOneAndUpdate({ project_id: params[0] }, { id: Date.now(), project_id: params[0], ddl_sql: params[1], sample_data_sql: params[2], dialect: params[3], is_outdated: false }, { upsert: true });
+    } else if (t.includes('INSERT INTO validation_results')) {
+      await DevForgeValidationResult.findOneAndUpdate({ project_id: params[0] }, { id: Date.now(), project_id: params[0], score: params[1], is_valid: params[2], issues: params[3] }, { upsert: true });
+    } else if (t.includes('INSERT INTO project_versions')) {
+      await DevForgeProjectVersion.create({ id: Date.now(), project_id: params[0], version_number: params[1], snapshot_json: params[2] });
+    } else if (t.includes('INSERT INTO ai_reviews')) {
+      await DevForgeAiReview.create({ id: Date.now(), project_id: params[0], review_number: params[1], summary: params[2], total_suggestions: params[3], critical_count: params[4], warning_count: params[5], improvement_count: params[6], review_data: params[7] });
+    } else if (t.includes('INSERT INTO modify_diffs')) {
+      await DevForgeModifyDiff.create({ id: Date.now(), project_id: params[0], before_score: params[1], after_score: params[2], before_snapshot: params[3], after_snapshot: params[4], diff_json: params[5] });
+    }
+  } catch (err) {
+    console.warn('MongoDB sync warning:', err.message);
+  }
+};
+
 const initDb = async () => {
+  const mongoUri = process.env.MONGODB_URI;
+  if (mongoUri && mongoose) {
+    try {
+      await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 5000, family: 4 });
+      useMongo = true;
+      console.log('Connected successfully to MongoDB Cluster. Storing all content in MongoDB.');
+      await loadFromMongo();
+    } catch (err) {
+      console.warn('MongoDB Cluster connection failed:', err.message);
+    }
+  }
+
   const dbUrl = process.env.DATABASE_URL;
   if (dbUrl && Pool) {
     try {
@@ -253,6 +392,10 @@ const initDb = async () => {
 };
 
 const query = async (text, params = []) => {
+  if (useMongo) {
+    syncMongoQuery(text, params).catch(() => {});
+  }
+
   if (usePg && pgPool) {
     const res = await pgPool.query(text, params);
     return res;
