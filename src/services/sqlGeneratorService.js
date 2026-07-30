@@ -6,6 +6,10 @@ const generateSqlScript = (schema, dialect = 'PostgreSQL') => {
   const dialectNormalized = dialect.toLowerCase();
   const sortedTables = sortTablesByDependency(schema.tables);
 
+  if (dialectNormalized === 'mongodb') {
+    return generateMongoScript(sortedTables, dialect);
+  }
+
   let ddlStatements = [];
   ddlStatements.push(`-- ==================================================\n-- DevForge AI Generated DDL Script\n-- Target Dialect: ${dialect}\n-- Generated: ${new Date().toISOString()}\n-- ==================================================\n`);
 
@@ -21,6 +25,89 @@ const generateSqlScript = (schema, dialect = 'PostgreSQL') => {
     ddlSql,
     sampleDataSql
   };
+};
+
+const generateMongoScript = (tables, dialect) => {
+  const mongooseLines = [];
+  mongooseLines.push(`// ==================================================\n// DevForge AI Generated MongoDB Schema & Models\n// Target Dialect: MongoDB (Mongoose JS & MongoDB Shell)\n// Generated: ${new Date().toISOString()}\n// ==================================================\n`);
+  mongooseLines.push(`const mongoose = require('mongoose');\n`);
+
+  tables.forEach((table) => {
+    const fields = table.columns.map((col) => {
+      const type = mapMongoDataType(col);
+      const isReq = !col.isNullable ? ', required: true' : '';
+      const isUnq = col.isUnique ? ', unique: true' : '';
+      const ref = (col.isForeignKey && col.references) ? `, ref: '${col.references.table}'` : '';
+      return `  ${col.name}: { type: ${type}${isReq}${isUnq}${ref} }`;
+    });
+
+    mongooseLines.push(`// Collection Model: ${table.name}\nconst ${table.name}Schema = new mongoose.Schema({\n${fields.join(',\n')}\n}, { timestamps: true });\n\nconst ${table.name} = mongoose.model('${table.name}', ${table.name}Schema);`);
+  });
+
+  mongooseLines.push(`\n// ==================================================\n// MongoDB Shell Collection Validator Creation:\n// ==================================================\n`);
+  tables.forEach((table) => {
+    const props = {};
+    table.columns.forEach((col) => {
+      props[col.name] = { bsonType: mapMongoBsonType(col.dataType), description: `${col.name} field` };
+    });
+    const validatorObj = {
+      $jsonSchema: {
+        bsonType: 'object',
+        required: table.columns.filter(c => !c.isNullable).map(c => c.name),
+        properties: props
+      }
+    };
+    mongooseLines.push(`db.createCollection('${table.name}', {\n  validator: ${JSON.stringify(validatorObj, null, 2)}\n});`);
+  });
+
+  const ddlSql = mongooseLines.join('\n\n');
+
+  const sampleLines = [];
+  sampleLines.push(`// ==================================================\n// DevForge AI MongoDB Sample Document Inserts\n// Target Dialect: MongoDB Shell / Cluster\n// ==================================================\n`);
+  tables.forEach((table) => {
+    const docs = [1, 2, 3].map((idx) => {
+      const doc = {};
+      table.columns.forEach((col) => {
+        if (col.isPrimaryKey || col.isForeignKey) {
+          doc[col.name] = idx;
+        } else {
+          const typeUpper = col.dataType.toUpperCase();
+          if (typeUpper.includes('INT')) doc[col.name] = idx * 10;
+          else if (typeUpper.includes('DECIMAL') || typeUpper.includes('FLOAT')) doc[col.name] = parseFloat((idx * 29.99).toFixed(2));
+          else if (typeUpper.includes('BOOL')) doc[col.name] = idx % 2 === 1;
+          else if (typeUpper.includes('DATE') || typeUpper.includes('TIMESTAMP')) doc[col.name] = new Date().toISOString();
+          else doc[col.name] = `${table.name}_Sample_${idx}`;
+        }
+      });
+      return doc;
+    });
+    sampleLines.push(`db.${table.name}.insertMany(${JSON.stringify(docs, null, 2)});`);
+  });
+
+  const sampleDataSql = sampleLines.join('\n\n');
+
+  return { ddlSql, sampleDataSql };
+};
+
+const mapMongoDataType = (col) => {
+  const typeUpper = col.dataType.toUpperCase();
+  if (col.isForeignKey) return 'mongoose.Schema.Types.ObjectId';
+  if (typeUpper.includes('INT') || typeUpper.includes('FLOAT') || typeUpper.includes('DECIMAL') || typeUpper.includes('DOUBLE') || typeUpper.includes('NUMBER')) return 'Number';
+  if (typeUpper.includes('BOOL')) return 'Boolean';
+  if (typeUpper.includes('DATE') || typeUpper.includes('TIMESTAMP')) return 'Date';
+  if (typeUpper.includes('ARRAY') || typeUpper.includes('JSON')) return 'Array';
+  return 'String';
+};
+
+const mapMongoBsonType = (dataType) => {
+  const typeUpper = dataType.toUpperCase();
+  if (typeUpper.includes('INT')) return 'int';
+  if (typeUpper.includes('FLOAT') || typeUpper.includes('DECIMAL') || typeUpper.includes('DOUBLE')) return 'double';
+  if (typeUpper.includes('BOOL')) return 'bool';
+  if (typeUpper.includes('DATE') || typeUpper.includes('TIMESTAMP')) return 'date';
+  if (typeUpper.includes('ARRAY')) return 'array';
+  if (typeUpper.includes('OBJECT') || typeUpper.includes('JSON')) return 'object';
+  return 'string';
 };
 
 const sortTablesByDependency = (tables) => {

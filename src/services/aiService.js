@@ -27,9 +27,16 @@ const executeGeminiPrompt = async (prompt) => {
       lastError = err;
       const errMsg = err.message || '';
       
-      // If 404 model not found, fallback to next available model
-      if (errMsg.includes('404 Not Found') || errMsg.includes('is no longer available')) {
-        console.warn(`Gemini model ${modelName} not available, trying next model...`);
+      // If 404 Not Found, 503 Service Unavailable, 500 Internal Error, or high demand, fallback to next available model
+      if (
+        errMsg.includes('404') ||
+        errMsg.includes('503') ||
+        errMsg.includes('500') ||
+        errMsg.includes('Service Unavailable') ||
+        errMsg.includes('high demand') ||
+        errMsg.includes('no longer available')
+      ) {
+        console.warn(`Gemini model ${modelName} unavailable (${errMsg.slice(0, 100)}...), trying next model candidate...`);
         continue;
       }
 
@@ -174,9 +181,93 @@ CRITICAL INSTRUCTIONS:
     const parsed = JSON.parse(cleaned);
     return validateAndCleanReviewJson(parsed);
   } catch (err) {
-    console.error('Gemini API Review Error:', err.message);
-    throw new Error(err.message || 'Failed to analyze database design with Gemini API.');
+    console.warn('Gemini API Review call failed, falling back to local architectural audit engine:', err.message);
+    return createFallbackReview(databaseDesign);
   }
+};
+
+const createFallbackReview = (databaseDesign) => {
+  const suggestions = [];
+  const entities = databaseDesign.entities || [];
+  const dialect = databaseDesign.databaseType || 'PostgreSQL';
+
+  entities.forEach((entity) => {
+    const tableName = entity.name;
+    const cols = entity.attributes || [];
+    const pkCols = cols.filter((c) => c.primaryKey);
+    const fkCols = cols.filter((c) => c.foreignKey);
+
+    // Check missing Primary Keys
+    if (pkCols.length === 0) {
+      suggestions.push({
+        severity: 'CRITICAL',
+        category: 'Constraint',
+        title: 'Missing Primary Key',
+        table: tableName,
+        column: '',
+        description: `Entity '${tableName}' has no primary key defined. Every entity must have a unique identifier for relational integrity.`,
+        suggestion: `Add an auto-incrementing primary key column '${tableName.toLowerCase()}_id' to '${tableName}'.`
+      });
+    }
+
+    // Check Unindexed Foreign Keys
+    fkCols.forEach((col) => {
+      suggestions.push({
+        severity: 'IMPROVEMENT',
+        category: 'Index',
+        title: 'Unindexed Foreign Key Column',
+        table: tableName,
+        column: col.name,
+        description: `Foreign key column '${col.name}' in table '${tableName}' will benefit from a B-Tree index for fast JOIN performance as dataset scales.`,
+        suggestion: `Create a single-column index on '${tableName}(${col.name})'.`
+      });
+    });
+
+    // Check Data Types
+    cols.forEach((col) => {
+      const typeUpper = (col.type || '').toUpperCase();
+      const nameLower = (col.name || '').toLowerCase();
+
+      if (typeUpper === 'FLOAT' || typeUpper === 'DOUBLE') {
+        if (nameLower.includes('price') || nameLower.includes('amount') || nameLower.includes('cost') || nameLower.includes('balance') || nameLower.includes('total')) {
+          suggestions.push({
+            severity: 'WARNING',
+            category: 'Data Type',
+            title: 'Floating Point Monetary Type',
+            table: tableName,
+            column: col.name,
+            description: `Using floating point type '${col.type}' for monetary field '${col.name}' can cause precision errors.`,
+            suggestion: `Change data type of '${col.name}' to DECIMAL(10,2) or NUMERIC.`
+          });
+        }
+      }
+      if (nameLower.includes('email') && !col.unique) {
+        suggestions.push({
+          severity: 'WARNING',
+          category: 'Constraint',
+          title: 'Missing Unique Constraint on Email',
+          table: tableName,
+          column: col.name,
+          description: `Email attribute '${col.name}' in '${tableName}' is not marked UNIQUE.`,
+          suggestion: `Add a UNIQUE constraint to '${tableName}(${col.name})'.`
+        });
+      }
+      if ((typeUpper.includes('VARCHAR') || typeUpper.includes('TEXT')) && !col.nullable && !col.primaryKey) {
+        suggestions.push({
+          severity: 'IMPROVEMENT',
+          category: 'Constraint',
+          title: 'NOT NULL Required String Field',
+          table: tableName,
+          column: col.name,
+          description: `Field '${col.name}' in '${tableName}' is specified as NOT NULL. Ensure application validation guarantees non-empty values.`,
+          suggestion: `Enforce non-empty string validation for '${col.name}'.`
+        });
+      }
+    });
+  });
+
+  const summary = `AI Audit completed using rule engine (${suggestions.length} architectural recommendations identified for target dialect ${dialect}).`;
+  return { summary, suggestions };
 };
 
 const validateAndCleanReviewJson = (parsed) => {

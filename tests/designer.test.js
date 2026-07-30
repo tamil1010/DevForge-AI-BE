@@ -41,6 +41,12 @@ test('E-Commerce Relational Schema & SQL Generation Test', () => {
   assert.ok(pgSql.ddlSql.includes('CREATE TABLE'), 'Should contain CREATE TABLE statement');
   assert.ok(pgSql.ddlSql.includes('FOREIGN KEY'), 'Should contain FOREIGN KEY constraint');
 
+  // Test MongoDB Generation
+  const mongoRes = sqlGeneratorService.generateSqlScript(schema, 'MongoDB');
+  assert.ok(mongoRes.ddlSql.includes('mongoose.Schema'), 'Should contain Mongoose Schema');
+  assert.ok(mongoRes.ddlSql.includes('db.createCollection'), 'Should contain MongoDB Shell createCollection');
+  assert.ok(mongoRes.sampleDataSql.includes('insertMany'), 'Should contain MongoDB insertMany');
+
   // Test Normalization Analysis
   const norm = normalizationService.analyzeNormalization(schema);
   assert.strictEqual(norm.overallScore, 100, 'Score should be 100 for clean schema');
