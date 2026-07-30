@@ -26,7 +26,10 @@ const memoryStore = {
   generated_sql: [],
   validation_results: [],
   ai_suggestions: [],
-  project_versions: []
+  project_versions: [],
+  ai_reviews: [],
+  modify_diffs: [],
+  index_recommendations: []
 };
 let isMemoryFallback = false;
 
@@ -192,6 +195,45 @@ const initDb = async () => {
               version_number INTEGER NOT NULL,
               snapshot_json TEXT NOT NULL,
               created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+          `);
+          sqliteDb.run(`
+            CREATE TABLE IF NOT EXISTS ai_reviews (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id INTEGER NOT NULL,
+              review_number INTEGER NOT NULL,
+              summary TEXT,
+              total_suggestions INTEGER DEFAULT 0,
+              critical_count INTEGER DEFAULT 0,
+              warning_count INTEGER DEFAULT 0,
+              improvement_count INTEGER DEFAULT 0,
+              review_data TEXT NOT NULL,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+          `);
+          sqliteDb.run(`
+            CREATE TABLE IF NOT EXISTS modify_diffs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id INTEGER NOT NULL,
+              before_score INTEGER DEFAULT 86,
+              after_score INTEGER DEFAULT 100,
+              before_snapshot TEXT NOT NULL,
+              after_snapshot TEXT NOT NULL,
+              diff_json TEXT NOT NULL,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+          `);
+          sqliteDb.run(`
+            CREATE TABLE IF NOT EXISTS index_recommendations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              project_id INTEGER UNIQUE NOT NULL,
+              recommendations_json TEXT NOT NULL,
+              applied_indexes_json TEXT,
+              ignored_indexes_json TEXT,
+              ai_analysis_json TEXT,
+              is_outdated INTEGER DEFAULT 0,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
           `, (err) => {
             if (err) reject(err);
@@ -476,6 +518,65 @@ const handleMemoryQuery = async (text, params) => {
     };
     memoryStore.project_versions.push(vItem);
     return { rows: [vItem], rowCount: 1 };
+  }
+
+  // AI Reviews
+  if (t.includes('SELECT MAX(review_number)')) {
+    const list = memoryStore.ai_reviews.filter(r => r.project_id == params[0]);
+    const maxV = list.reduce((m, r) => Math.max(m, r.review_number || 0), 0);
+    return { rows: [{ max_rev: maxV }], rowCount: 1 };
+  }
+  if (t.includes('SELECT * FROM ai_reviews WHERE project_id')) {
+    const list = memoryStore.ai_reviews
+      .filter(r => r.project_id == params[0])
+      .sort((a, b) => b.review_number - a.review_number || b.id - a.id);
+    return { rows: list, rowCount: list.length };
+  }
+  if (t.includes('INSERT INTO ai_reviews')) {
+    const revItem = {
+      id: memoryStore.ai_reviews.length + 1,
+      project_id: params[0],
+      review_number: params[1],
+      summary: params[2],
+      total_suggestions: params[3],
+      critical_count: params[4],
+      warning_count: params[5],
+      improvement_count: params[6],
+      review_data: params[7],
+      created_at: new Date().toISOString()
+    };
+    memoryStore.ai_reviews.push(revItem);
+    return { rows: [revItem], rowCount: 1 };
+  }
+  if (t.includes('DELETE FROM ai_reviews WHERE id')) {
+    memoryStore.ai_reviews = memoryStore.ai_reviews.filter(r => r.id != params[0]);
+    return { rows: [], rowCount: 1 };
+  }
+  if (t.includes('DELETE FROM ai_reviews WHERE project_id')) {
+    memoryStore.ai_reviews = memoryStore.ai_reviews.filter(r => r.project_id != params[0]);
+    return { rows: [], rowCount: 1 };
+  }
+
+  // Modify Diffs
+  if (t.includes('SELECT * FROM modify_diffs WHERE project_id')) {
+    const list = memoryStore.modify_diffs
+      .filter(r => r.project_id == params[0])
+      .sort((a, b) => b.id - a.id);
+    return { rows: list, rowCount: list.length };
+  }
+  if (t.includes('INSERT INTO modify_diffs')) {
+    const diffItem = {
+      id: memoryStore.modify_diffs.length + 1,
+      project_id: params[0],
+      before_score: params[1],
+      after_score: params[2],
+      before_snapshot: params[3],
+      after_snapshot: params[4],
+      diff_json: params[5],
+      created_at: new Date().toISOString()
+    };
+    memoryStore.modify_diffs.push(diffItem);
+    return { rows: [diffItem], rowCount: 1 };
   }
 
   return { rows: [], rowCount: 0 };
