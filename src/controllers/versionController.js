@@ -4,6 +4,12 @@ const asyncHandler = require('../utils/asyncHandler');
 const { createProjectVersion, compareVersions } = require('../services/versionService');
 const indexService = require('../services/indexService');
 
+const parseId = (id) => {
+  if (id === undefined || id === null) return id;
+  const num = parseInt(id, 10);
+  return isNaN(num) ? id : num;
+};
+
 const verifyOwnership = async (projectId, userId) => {
   const res = await db.query('SELECT user_id, database_type, name FROM projects WHERE id = $1', [projectId]);
   if (res.rows.length === 0) throw new ApiError(404, 'Project not found.');
@@ -12,7 +18,7 @@ const verifyOwnership = async (projectId, userId) => {
 };
 
 const getVersions = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const userId = req.user.id;
 
   await verifyOwnership(projectId, userId);
@@ -64,7 +70,7 @@ const getVersions = asyncHandler(async (req, res) => {
 });
 
 const createVersion = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const userId = req.user.id;
   const { versionName, description, tag } = req.body || {};
 
@@ -191,7 +197,7 @@ const createVersion = asyncHandler(async (req, res) => {
 });
 
 const compareProjectVersions = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const { v1, v2 } = req.query;
   const userId = req.user.id;
 
@@ -220,7 +226,7 @@ const compareProjectVersions = asyncHandler(async (req, res) => {
 });
 
 const restoreVersion = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const versionNumber = parseInt(req.params.versionNumber, 10);
   const userId = req.user.id;
 
@@ -349,11 +355,11 @@ const restoreVersion = asyncHandler(async (req, res) => {
 });
 
 const deleteVersion = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const versionNumber = parseInt(req.params.versionNumber, 10);
   const userId = req.user.id;
 
-  if (isNaN(projectId) || isNaN(versionNumber)) {
+  if (!projectId || isNaN(versionNumber)) {
     throw new ApiError(400, 'Invalid project ID or version number.');
   }
 

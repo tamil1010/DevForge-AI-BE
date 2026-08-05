@@ -494,8 +494,14 @@ const reviewAi = asyncHandler(async (req, res) => {
   });
 });
 
+const parseId = (id) => {
+  if (id === undefined || id === null) return id;
+  const num = parseInt(id, 10);
+  return isNaN(num) ? id : num;
+};
+
 const getAiReviews = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId || req.params.id, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const userId = req.user.id;
 
   await verifyOwnership(projectId, userId);
@@ -542,7 +548,7 @@ const getAiReviews = asyncHandler(async (req, res) => {
 });
 
 const deleteAiReview = asyncHandler(async (req, res) => {
-  const reviewId = parseInt(req.params.id, 10);
+  const reviewId = parseId(req.params.id);
   const userId = req.user.id;
 
   const reviewRes = await db.query('SELECT project_id FROM ai_reviews WHERE id = $1', [reviewId]);
@@ -559,7 +565,7 @@ const deleteAiReview = asyncHandler(async (req, res) => {
 });
 
 const clearAiReviews = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const userId = req.user.id;
 
   await verifyOwnership(projectId, userId);
@@ -831,7 +837,7 @@ const modifyAi = asyncHandler(async (req, res) => {
 });
 
 const getModifyDiff = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId || req.params.id, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const userId = req.user.id;
 
   await verifyOwnership(projectId, userId);
@@ -870,7 +876,7 @@ const getModifyDiff = asyncHandler(async (req, res) => {
 });
 
 const getIndexRecommendations = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.projectId, 10);
+  const projectId = parseId(req.params.projectId || req.params.id);
   const userId = req.user.id;
 
   const project = await verifyOwnership(projectId, userId);
