@@ -164,12 +164,18 @@ const initDb = async () => {
   const mongoUri = process.env.MONGODB_URI;
   if (mongoUri && mongoose) {
     try {
-      await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 5000, family: 4 });
-      useMongo = true;
-      console.log('Connected successfully to MongoDB Cluster. Storing all content in MongoDB.');
-      await loadFromMongo();
+      await Promise.race([
+        (async () => {
+          await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 2500, connectTimeoutMS: 2500, family: 4 });
+          useMongo = true;
+          console.log('Connected successfully to MongoDB Cluster. Storing all content in MongoDB.');
+          await loadFromMongo();
+        })(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('MongoDB connection/load timeout')), 2500))
+      ]);
     } catch (err) {
-      console.warn('MongoDB Cluster connection failed:', err.message);
+      useMongo = false;
+      console.warn('MongoDB Cluster connection skipped/failed, using local SQLite:', err.message);
     }
   }
 
