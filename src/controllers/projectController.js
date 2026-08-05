@@ -29,7 +29,7 @@ const getProjects = asyncHandler(async (req, res) => {
 });
 
 const getProject = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.id, 10);
+  const projectId = isNaN(parseInt(req.params.id, 10)) ? req.params.id : parseInt(req.params.id, 10);
   const userId = req.user.id;
 
   const projectRes = await db.query('SELECT * FROM projects WHERE id = $1', [projectId]);
@@ -39,7 +39,7 @@ const getProject = asyncHandler(async (req, res) => {
 
   const project = projectRes.rows[0];
 
-  if (project.user_id !== userId) {
+  if (project.user_id != userId) {
     throw new ApiError(403, 'Unauthorized access to project.');
   }
 
@@ -150,13 +150,13 @@ const createProject = asyncHandler(async (req, res) => {
 });
 
 const updateProject = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.id, 10);
+  const projectId = isNaN(parseInt(req.params.id, 10)) ? req.params.id : parseInt(req.params.id, 10);
   const { name, description, database_type } = req.body;
   const userId = req.user.id;
 
   const checkRes = await db.query('SELECT user_id FROM projects WHERE id = $1', [projectId]);
   if (checkRes.rows.length === 0) throw new ApiError(404, 'Project not found.');
-  if (checkRes.rows[0].user_id !== userId) throw new ApiError(403, 'Unauthorized.');
+  if (checkRes.rows[0].user_id != userId) throw new ApiError(403, 'Unauthorized.');
 
   await db.query(
     `UPDATE projects
@@ -175,12 +175,12 @@ const updateProject = asyncHandler(async (req, res) => {
 });
 
 const duplicateProject = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.id, 10);
+  const projectId = isNaN(parseInt(req.params.id, 10)) ? req.params.id : parseInt(req.params.id, 10);
   const userId = req.user.id;
 
   const projRes = await db.query('SELECT * FROM projects WHERE id = $1', [projectId]);
   if (projRes.rows.length === 0) throw new ApiError(404, 'Project not found.');
-  if (projRes.rows[0].user_id !== userId) throw new ApiError(403, 'Unauthorized.');
+  if (projRes.rows[0].user_id != userId) throw new ApiError(403, 'Unauthorized.');
 
   const orig = projRes.rows[0];
   const newName = `${orig.name} (Copy)`;
@@ -235,12 +235,12 @@ const duplicateProject = asyncHandler(async (req, res) => {
 });
 
 const deleteProject = asyncHandler(async (req, res) => {
-  const projectId = parseInt(req.params.id, 10);
+  const projectId = isNaN(parseInt(req.params.id, 10)) ? req.params.id : parseInt(req.params.id, 10);
   const userId = req.user.id;
 
   const checkRes = await db.query('SELECT user_id FROM projects WHERE id = $1', [projectId]);
   if (checkRes.rows.length === 0) throw new ApiError(404, 'Project not found.');
-  if (checkRes.rows[0].user_id !== userId) throw new ApiError(403, 'Unauthorized.');
+  if (checkRes.rows[0].user_id != userId) throw new ApiError(403, 'Unauthorized.');
 
   await db.query('DELETE FROM projects WHERE id = $1', [projectId]);
 
