@@ -7,7 +7,7 @@ const indexService = require('../services/indexService');
 const verifyOwnership = async (projectId, userId) => {
   const res = await db.query('SELECT user_id, database_type, name FROM projects WHERE id = $1', [projectId]);
   if (res.rows.length === 0) throw new ApiError(404, 'Project not found.');
-  if (res.rows[0].user_id !== userId) throw new ApiError(403, 'Unauthorized access to project.');
+  if (res.rows[0].user_id != userId) throw new ApiError(403, 'Unauthorized access to project.');
   return res.rows[0];
 };
 
