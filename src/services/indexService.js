@@ -392,7 +392,7 @@ const generateIndexRecommendations = (schema, dialect = 'PostgreSQL', savedAppli
         indexType: 'AI Workload Suggestion',
         priority: aiItem.priority || 'HIGH',
         estimatedBenefit: aiItem.estimatedBenefit || 'High',
-        reason: aiItem.reason || 'Gemini AI predicted high-volume query join or filter workload.',
+        reason: aiItem.reason || 'Groq AI predicted high-volume query join or filter workload.',
         sql: sqlStr,
         status: isApplied ? 'Applied' : isIgnored ? 'Ignored' : 'Recommended',
         isExisting: false,

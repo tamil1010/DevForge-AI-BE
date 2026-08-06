@@ -1,67 +1,105 @@
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const Groq = require('groq-sdk');
 
-const executeGeminiPrompt = async (prompt) => {
-  const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
+const executeGroqPrompt = async (prompt, jsonMode = true) => {
+  const apiKey = process.env.GROQ_API_KEY || process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('Gemini API key is not configured. Please set GEMINI_API_KEY in your AI BE/.env file.');
+    throw new Error('Groq API key is not configured. Please set GROQ_API_KEY in your AI BE/.env file.');
   }
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const preferredModel = process.env.AI_MODEL || 'gemini-2.0-flash';
+  const groq = new Groq({ apiKey });
+  const preferredModel = process.env.GROQ_MODEL || process.env.AI_MODEL || 'llama-3.3-70b-versatile';
   const candidateModels = Array.from(new Set([
     preferredModel,
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-    'gemini-2.5-flash',
-    'gemini-1.5-flash-latest'
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'mixtral-8x7b-32768'
   ]));
 
   let lastError = null;
 
   for (const modelName of candidateModels) {
     try {
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent(prompt);
-      return result.response.text();
+      const messages = [
+        {
+          role: 'system',
+          content: 'You are a Database Architect API system. Output strictly valid JSON. Do NOT include any conversational preamble, introduction, markdown headers, or trailing explanations.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ];
+
+      const options = {
+        messages,
+        model: modelName,
+        temperature: 0.1
+      };
+
+      if (jsonMode) {
+        options.response_format = { type: 'json_object' };
+      }
+
+      const chatCompletion = await groq.chat.completions.create(options);
+      return chatCompletion.choices[0]?.message?.content || '';
     } catch (err) {
       lastError = err;
       const errMsg = err.message || '';
       
-      // If 404 Not Found, 503 Service Unavailable, 500 Internal Error, or high demand, fallback to next available model
       if (
         errMsg.includes('404') ||
         errMsg.includes('503') ||
         errMsg.includes('500') ||
         errMsg.includes('Service Unavailable') ||
-        errMsg.includes('high demand') ||
-        errMsg.includes('no longer available')
+        errMsg.includes('model_not_found') ||
+        errMsg.includes('response_format')
       ) {
-        console.warn(`Gemini model ${modelName} unavailable (${errMsg.slice(0, 100)}...), trying next model candidate...`);
+        console.warn(`Groq model ${modelName} notice (${errMsg.slice(0, 100)}...), trying fallback execution...`);
+        // Retry without response_format if model throws response_format error
+        if (jsonMode && errMsg.includes('response_format')) {
+          try {
+            const fallbackCompletion = await groq.chat.completions.create({
+              messages: [
+                {
+                  role: 'system',
+                  content: 'Output strictly valid unformatted JSON.'
+                },
+                {
+                  role: 'user',
+                  content: prompt
+                }
+              ],
+              model: modelName,
+              temperature: 0.1
+            });
+            return fallbackCompletion.choices[0]?.message?.content || '';
+          } catch (fallbackErr) {
+            lastError = fallbackErr;
+          }
+        }
         continue;
       }
 
-      // Format rate limit / quota exceeded error
-      if (errMsg.includes('429') || errMsg.includes('Quota exceeded') || errMsg.includes('Too Many Requests')) {
-        throw new Error('Gemini API free tier rate limit or quota exceeded. Please wait a minute before retrying, or check your Gemini API quota.');
+      if (errMsg.includes('429') || errMsg.includes('Quota exceeded') || errMsg.includes('Rate limit')) {
+        throw new Error('Groq API rate limit exceeded. Please wait a moment before retrying.');
       }
 
-      throw new Error(`Gemini API call failed: ${errMsg}`);
+      throw new Error(`Groq API call failed: ${errMsg}`);
     }
   }
 
   if (lastError) {
-    if (lastError.message && lastError.message.includes('404')) {
-      throw new Error('Configured Gemini model not found. Defaulting to gemini-2.0-flash.');
-    }
     throw new Error(lastError.message);
   }
 };
 
-const analyzeRequirement = async (requirementText, databaseType = 'PostgreSQL') => {
-  const provider = process.env.AI_PROVIDER || 'gemini';
-  const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
+const executeGeminiPrompt = executeGroqPrompt;
 
-  if (provider === 'gemini' && apiKey) {
+const analyzeRequirement = async (requirementText, databaseType = 'PostgreSQL') => {
+  const provider = process.env.AI_PROVIDER || 'groq';
+  const apiKey = process.env.GROQ_API_KEY || process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
+
+  if (apiKey) {
     try {
       const prompt = `
 You are an expert Database Architect. Analyze the following software database requirement for target database dialect: ${databaseType}.
@@ -176,12 +214,12 @@ CRITICAL INSTRUCTIONS:
 `;
 
   try {
-    const text = await executeGeminiPrompt(prompt);
+    const text = await executeGroqPrompt(prompt);
     const cleaned = cleanJsonResponse(text);
     const parsed = JSON.parse(cleaned);
     return validateAndCleanReviewJson(parsed);
   } catch (err) {
-    console.warn('Gemini API Review call failed, falling back to local architectural audit engine:', err.message);
+    console.warn('Groq API Review call failed, falling back to local architectural audit engine:', err.message);
     return createFallbackReview(databaseDesign);
   }
 };
@@ -272,7 +310,7 @@ const createFallbackReview = (databaseDesign) => {
 
 const validateAndCleanReviewJson = (parsed) => {
   if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Invalid response structure returned by Gemini API.');
+    throw new Error('Invalid response structure returned by Groq API.');
   }
 
   const summary = typeof parsed.summary === 'string' && parsed.summary.trim()
@@ -308,13 +346,35 @@ const validateAndCleanReviewJson = (parsed) => {
 
 
 const cleanJsonResponse = (rawText) => {
-  let cleaned = rawText.trim();
-  if (cleaned.startsWith('```json')) {
-    cleaned = cleaned.replace(/^```json/, '').replace(/```$/, '');
-  } else if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```/, '').replace(/```$/, '');
+  if (!rawText) return '{}';
+  let text = String(rawText).trim();
+
+  // 1. Strip markdown code block markers ```json ... ```
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (codeBlockMatch && codeBlockMatch[1]) {
+    text = codeBlockMatch[1].trim();
   }
-  return cleaned.trim();
+
+  // 2. Extract content starting from first '{' or '[' up to last '}' or ']'
+  const firstBrace = text.indexOf('{');
+  const firstBracket = text.indexOf('[');
+
+  let startIdx = -1;
+  let endIdx = -1;
+
+  if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+    startIdx = firstBrace;
+    endIdx = text.lastIndexOf('}');
+  } else if (firstBracket !== -1) {
+    startIdx = firstBracket;
+    endIdx = text.lastIndexOf(']');
+  }
+
+  if (startIdx !== -1 && endIdx > startIdx) {
+    text = text.substring(startIdx, endIdx + 1).trim();
+  }
+
+  return text;
 };
 
 const validateAndCleanAnalysisJson = (json) => {
@@ -495,7 +555,7 @@ const generateDeterministicReviewSuggestions = (entities, relationships, databas
 };
 
 const modifyDesignWithReview = async (databaseDesign, suggestions = []) => {
-  const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GROQ_API_KEY || process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
 
   if (apiKey) {
     try {
@@ -552,12 +612,12 @@ Requirements:
   ]
 }
 `;
-      const responseText = await executeGeminiPrompt(prompt);
+      const responseText = await executeGroqPrompt(prompt);
       const cleaned = cleanJsonResponse(responseText);
       const parsed = JSON.parse(cleaned);
       return validateAndCleanModifiedDesign(parsed, databaseDesign);
     } catch (err) {
-      console.warn('Gemini modify API call failed. Applying fallback rule-based modify:', err.message);
+      console.warn('Groq modify API call failed. Applying fallback rule-based modify:', err.message);
     }
   }
 
@@ -633,10 +693,10 @@ const fallbackModifyDesign = (databaseDesign, suggestions = []) => {
 };
 
 const analyzeIndexesWithAi = async (schema, dialect = 'PostgreSQL', domain = '') => {
-  const provider = process.env.AI_PROVIDER || 'gemini';
-  const apiKey = process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
+  const provider = process.env.AI_PROVIDER || 'groq';
+  const apiKey = process.env.GROQ_API_KEY || process.env.AI_API_KEY || process.env.GEMINI_API_KEY;
 
-  if (provider === 'gemini' && apiKey && schema && schema.tables && schema.tables.length > 0) {
+  if (apiKey && schema && schema.tables && schema.tables.length > 0) {
     try {
       const prompt = `
 You are a Principal Database Performance Engineer. Analyze the following relational database schema for dialect ${dialect} in the ${domain || 'General Software System'} domain.
@@ -661,14 +721,14 @@ Respond ONLY with valid, unformatted JSON matching this exact structure:
   "aiSummary": "Comprehensive summary of AI database index performance analysis."
 }
 `;
-      const responseText = await executeGeminiPrompt(prompt);
+      const responseText = await executeGroqPrompt(prompt);
       const cleanedJson = cleanJsonResponse(responseText);
       const parsed = JSON.parse(cleanedJson);
       if (parsed && Array.isArray(parsed.aiSuggestions)) {
         return parsed;
       }
     } catch (err) {
-      console.warn('Gemini AI index analysis failed, falling back to heuristic AI engine:', err.message);
+      console.warn('Groq AI index analysis failed, falling back to heuristic AI engine:', err.message);
     }
   }
 
