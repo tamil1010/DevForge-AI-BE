@@ -728,6 +728,10 @@ const handleMemoryQuery = async (text, params) => {
     const maxV = list.reduce((m, r) => Math.max(m, r.review_number || 0), 0);
     return { rows: [{ max_rev: maxV }], rowCount: 1 };
   }
+  if (t.includes('SELECT project_id FROM ai_reviews WHERE id') || t.includes('SELECT * FROM ai_reviews WHERE id')) {
+    const item = memoryStore.ai_reviews.find(r => r.id == params[0]);
+    return { rows: item ? [item] : [], rowCount: item ? 1 : 0 };
+  }
   if (t.includes('SELECT * FROM ai_reviews WHERE project_id')) {
     const list = memoryStore.ai_reviews
       .filter(r => r.project_id == params[0])
@@ -736,7 +740,7 @@ const handleMemoryQuery = async (text, params) => {
   }
   if (t.includes('INSERT INTO ai_reviews')) {
     const revItem = {
-      id: memoryStore.ai_reviews.length + 1,
+      id: Date.now(),
       project_id: params[0],
       review_number: params[1],
       summary: params[2],
