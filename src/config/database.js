@@ -69,12 +69,40 @@ const loadFromMongo = async () => {
     const users = await DevForgeUser.find({});
     memoryStore.users = users.map(u => u.toObject());
 
-    const projects = await DevForgeProject.find({});
-    memoryStore.projects = projects.map(p => p.toObject());
+    const projects = await DevForgeProject.find({}).sort({ createdAt: 1, _id: 1 });
+    const projectList = projects.map(p => p.toObject());
+
+    // Repair step: Remap legacy numeric project_ids (e.g. 1, 2) to actual project IDs before orphan purge
+    for (let i = 0; i < projectList.length; i++) {
+      const p = projectList[i];
+      const targetId = p.id !== undefined && p.id !== null ? p.id : String(p._id);
+      const legacyId = i + 1;
+
+      if (legacyId !== targetId && String(legacyId) !== String(targetId)) {
+        const legacyMatches = [legacyId, String(legacyId)];
+        await DevForgeRequirement.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeEntity.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeRelationship.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeGeneratedSchema.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeGeneratedSql.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeValidationResult.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeProjectVersion.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeAiReview.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeModifyDiff.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+        await DevForgeIndexRecommendation.updateMany({ project_id: { $in: legacyMatches } }, { project_id: targetId });
+      }
+    }
+
+    memoryStore.projects = projectList.map(p => ({
+      ...p,
+      id: p.id !== undefined && p.id !== null ? p.id : String(p._id),
+      created_at: p.created_at || p.createdAt || new Date().toISOString(),
+      updated_at: p.updated_at || p.updatedAt || new Date().toISOString()
+    }));
 
     // Active project IDs set
     const activeProjIds = new Set();
-    projects.forEach(p => {
+    memoryStore.projects.forEach(p => {
       if (p.id !== undefined && p.id !== null && p.id !== 'completed') {
         activeProjIds.add(p.id);
         activeProjIds.add(String(p.id));
@@ -137,13 +165,13 @@ const loadFromMongo = async () => {
     const idxs = await DevForgeIndexRecommendation.find({});
     memoryStore.index_recommendations = idxs.map(i => i.toObject());
 
-    console.log(`Loaded ${projects.length} active database projects from MongoDB Cluster (orphans purged).`);
+    console.log(`Loaded ${memoryStore.projects.length} active database projects from MongoDB Cluster (orphans purged).`);
   } catch (err) {
     console.warn('Error loading initial data from MongoDB:', err.message);
   }
 };
 
-const syncMongoQuery = async (text, params) => {
+const syncMongoQuery = async (text, params, memResult) => {
   if (!useMongo || !mongoose) return;
   try {
     const t = text.trim().replace(/\s+/g, ' ');
@@ -153,8 +181,9 @@ const syncMongoQuery = async (text, params) => {
     } else if (t.includes('UPDATE users SET password_hash')) {
       await DevForgeUser.updateOne({ id: params[1] }, { password_hash: params[0] });
     } else if (t.includes('INSERT INTO projects')) {
+      const createdProj = (memResult && memResult.rows && memResult.rows[0]) ? memResult.rows[0] : null;
       const isStatusParam = (params[4] && typeof params[4] === 'string' && isNaN(Number(params[4])));
-      const projId = isStatusParam ? Date.now() : (params[4] || Date.now());
+      const projId = createdProj ? createdProj.id : (isStatusParam ? Date.now() : (params[4] || Date.now()));
       const projStatus = isStatusParam ? params[4] : 'draft';
       await DevForgeProject.create({
         id: projId,
@@ -222,19 +251,25 @@ const syncMongoQuery = async (text, params) => {
         { upsert: true }
       );
     } else if (t.includes('INSERT INTO entities')) {
-      await DevForgeEntity.create({ id: Date.now() + Math.random(), project_id: params[0], name: params[1], description: params[2] });
+      const createdEnt = (memResult && memResult.rows && memResult.rows[0]) ? memResult.rows[0] : null;
+      const entId = createdEnt ? createdEnt.id : (Date.now() + Math.random());
+      await DevForgeEntity.create({ id: entId, project_id: params[0], name: params[1], description: params[2] });
     } else if (t.includes('DELETE FROM entities WHERE project_id')) {
       const pIdMatch = [params[0], String(params[0])];
       if (!isNaN(Number(params[0]))) pIdMatch.push(Number(params[0]));
       await DevForgeEntity.deleteMany({ project_id: { $in: pIdMatch } });
     } else if (t.includes('INSERT INTO attributes')) {
-      await DevForgeAttribute.create({ id: Date.now() + Math.random(), entity_id: params[0], name: params[1], data_type: params[2], is_primary_key: params[3], is_foreign_key: params[4], is_nullable: params[5], is_unique: params[6], auto_increment: params[7], default_value: params[8] });
+      const createdAttr = (memResult && memResult.rows && memResult.rows[0]) ? memResult.rows[0] : null;
+      const attrId = createdAttr ? createdAttr.id : (Date.now() + Math.random());
+      await DevForgeAttribute.create({ id: attrId, entity_id: params[0], name: params[1], data_type: params[2], is_primary_key: params[3], is_foreign_key: params[4], is_nullable: params[5], is_unique: params[6], auto_increment: params[7], default_value: params[8] });
     } else if (t.includes('DELETE FROM attributes WHERE entity_id')) {
       const eIdMatch = [params[0], String(params[0])];
       if (!isNaN(Number(params[0]))) eIdMatch.push(Number(params[0]));
       await DevForgeAttribute.deleteMany({ entity_id: { $in: eIdMatch } });
     } else if (t.includes('INSERT INTO relationships')) {
-      await DevForgeRelationship.create({ id: Date.now() + Math.random(), project_id: params[0], source_entity: params[1], target_entity: params[2], type: params[3], source_column: params[4], target_column: params[5], foreign_key_column: params[6], on_delete: params[7], on_update: params[8], description: params[9] });
+      const createdRel = (memResult && memResult.rows && memResult.rows[0]) ? memResult.rows[0] : null;
+      const relId = createdRel ? createdRel.id : (Date.now() + Math.random());
+      await DevForgeRelationship.create({ id: relId, project_id: params[0], source_entity: params[1], target_entity: params[2], type: params[3], source_column: params[4], target_column: params[5], foreign_key_column: params[6], on_delete: params[7], on_update: params[8], description: params[9] });
     } else if (t.includes('DELETE FROM relationships WHERE project_id')) {
       const pIdMatch = [params[0], String(params[0])];
       if (!isNaN(Number(params[0]))) pIdMatch.push(Number(params[0]));
@@ -304,15 +339,27 @@ const syncMongoQuery = async (text, params) => {
 const initDb = async () => {
   const mongoUri = process.env.MONGODB_URI;
   if (mongoUri && mongoose) {
-    try {
-      await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000, connectTimeoutMS: 10000, family: 4 });
-      useMongo = true;
-      console.log('Connected successfully to MongoDB Cluster. Storing all content in MongoDB.');
-      await loadFromMongo();
-      return;
-    } catch (err) {
-      useMongo = false;
-      console.warn('MongoDB Cluster connection skipped/failed, using in-memory store:', err.message);
+    const maxRetries = 3;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await mongoose.connect(mongoUri, {
+          serverSelectionTimeoutMS: 12000,
+          connectTimeoutMS: 12000,
+          retryWrites: true
+        });
+        useMongo = true;
+        console.log('Connected successfully to MongoDB Cluster. Storing all content in MongoDB.');
+        await loadFromMongo();
+        return;
+      } catch (err) {
+        if (attempt < maxRetries) {
+          console.warn(`MongoDB Cluster connection attempt ${attempt}/${maxRetries} failed: ${err.message}. Retrying in 1.5s...`);
+          await new Promise(res => setTimeout(res, 1500));
+        } else {
+          useMongo = false;
+          console.warn('MongoDB Cluster connection skipped/failed, using in-memory store:', err.message);
+        }
+      }
     }
   }
 
@@ -341,16 +388,20 @@ const initDb = async () => {
 };
 
 const query = async (text, params = []) => {
-  if (useMongo) {
-    syncMongoQuery(text, params).catch(() => {});
-  }
-
   if (usePg && pgPool) {
     const res = await pgPool.query(text, params);
     return res;
   }
 
-  return handleMemoryQuery(text, params);
+  const memResult = await handleMemoryQuery(text, params);
+
+  if (useMongo) {
+    syncMongoQuery(text, params, memResult).catch((err) => {
+      console.warn('MongoDB sync warning:', err.message);
+    });
+  }
+
+  return memResult;
 };
 
 const handleMemoryQuery = async (text, params) => {
@@ -377,36 +428,58 @@ const handleMemoryQuery = async (text, params) => {
     return { rows: user ? [{ id: user.id }] : [], rowCount: user ? 1 : 0 };
   }
   if (t.includes('SELECT password_hash FROM users WHERE id')) {
-    const user = memoryStore.users.find((u) => u.id == params[0]);
+    const user = memoryStore.users.find((u) => String(u.id) === String(params[0]));
     return { rows: user ? [{ password_hash: user.password_hash }] : [], rowCount: user ? 1 : 0 };
   }
   if (t.includes('UPDATE users SET password_hash')) {
-    const user = memoryStore.users.find((u) => u.id == params[1]);
+    const user = memoryStore.users.find((u) => String(u.id) === String(params[1]));
     if (user) user.password_hash = params[0];
     return { rows: user ? [user] : [], rowCount: user ? 1 : 0 };
   }
   if (t.includes('SELECT id, full_name, email, created_at FROM users WHERE id')) {
-    const user = memoryStore.users.find((u) => u.id == params[0]);
+    const user = memoryStore.users.find((u) => String(u.id) === String(params[0]));
     return { rows: user ? [user] : [], rowCount: user ? 1 : 0 };
   }
   if (t.includes('SELECT full_name FROM users WHERE id')) {
-    const user = memoryStore.users.find((u) => u.id == params[0]);
+    const user = memoryStore.users.find((u) => String(u.id) === String(params[0]));
     return { rows: user ? [{ full_name: user.full_name }] : [], rowCount: user ? 1 : 0 };
   }
 
   // Projects
+  if (t === 'SELECT * FROM projects') {
+    const formatted = memoryStore.projects.map(p => {
+      const pId = p.id !== undefined && p.id !== null ? p.id : p._id;
+      const count = memoryStore.entities.filter(e => String(e.project_id) === String(pId) || (p._id && String(e.project_id) === String(p._id))).length;
+      return {
+        ...p,
+        id: pId,
+        created_at: p.created_at || p.createdAt || new Date().toISOString(),
+        updated_at: p.updated_at || p.updatedAt || new Date().toISOString(),
+        table_count: count,
+        entity_count: count
+      };
+    });
+    return { rows: formatted, rowCount: formatted.length };
+  }
   if (t.includes('SELECT p.*')) {
-    const userProjs = memoryStore.projects.filter((p) => p.user_id == params[0]);
-    const formatted = userProjs.map(p => ({
-      ...p,
-      table_count: memoryStore.entities.filter(e => e.project_id == p.id).length,
-      entity_count: memoryStore.entities.filter(e => e.project_id == p.id).length
-    }));
+    const userProjs = memoryStore.projects.filter((p) => String(p.user_id) === String(params[0]));
+    const formatted = userProjs.map(p => {
+      const pId = p.id !== undefined && p.id !== null ? p.id : p._id;
+      const count = memoryStore.entities.filter(e => String(e.project_id) === String(pId) || (p._id && String(e.project_id) === String(p._id))).length;
+      return {
+        ...p,
+        id: pId,
+        created_at: p.created_at || p.createdAt || new Date().toISOString(),
+        updated_at: p.updated_at || p.updatedAt || new Date().toISOString(),
+        table_count: count,
+        entity_count: count
+      };
+    });
     return { rows: formatted, rowCount: formatted.length };
   }
   if (t.includes('INSERT INTO projects')) {
     const isStatusParam = (params[4] && typeof params[4] === 'string' && isNaN(Number(params[4])));
-    const projId = isStatusParam ? (memoryStore.projects.length + 1) : (params[4] || (memoryStore.projects.length + 1));
+    const projId = (params[4] && !isStatusParam) ? params[4] : Date.now();
     const projStatus = isStatusParam ? params[4] : 'draft';
     const proj = {
       id: projId,
