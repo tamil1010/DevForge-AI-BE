@@ -56,8 +56,63 @@ const memoryStore = {
   project_versions: [],
   ai_reviews: [],
   modify_diffs: [],
-  index_recommendations: []
+  index_recommendations: [],
+  code_projects: [],
+  code_files: [],
+  code_versions: [],
+  code_chats: []
 };
+
+// Mongoose Schemas for AI Code Module
+const DevForgeCodeProjectSchema = new mongoose.Schema({
+  id: mongoose.Schema.Types.Mixed,
+  user_id: mongoose.Schema.Types.Mixed,
+  name: String,
+  description: String,
+  requirement: String,
+  programming_language: String,
+  framework: String,
+  database_type: String,
+  project_type: String,
+  status: String,
+  linked_db_project_id: mongoose.Schema.Types.Mixed,
+  analysis_json: mongoose.Schema.Types.Mixed,
+  architecture_json: mongoose.Schema.Types.Mixed,
+  validation_summary: mongoose.Schema.Types.Mixed
+}, schemaOpts);
+
+const DevForgeCodeFileSchema = new mongoose.Schema({
+  id: mongoose.Schema.Types.Mixed,
+  project_id: mongoose.Schema.Types.Mixed,
+  path: String,
+  name: String,
+  content: String,
+  language: String,
+  is_directory: Boolean
+}, schemaOpts);
+
+const DevForgeCodeVersionSchema = new mongoose.Schema({
+  id: mongoose.Schema.Types.Mixed,
+  project_id: mongoose.Schema.Types.Mixed,
+  version_number: mongoose.Schema.Types.Mixed,
+  description: String,
+  files_snapshot: mongoose.Schema.Types.Mixed
+}, schemaOpts);
+
+const DevForgeCodeChatSchema = new mongoose.Schema({
+  id: mongoose.Schema.Types.Mixed,
+  project_id: mongoose.Schema.Types.Mixed,
+  sender: String,
+  message: String,
+  code_snippet: String,
+  metadata: mongoose.Schema.Types.Mixed
+}, schemaOpts);
+
+const DevForgeCodeProject = mongoose ? (mongoose.models.DevForgeCodeProject || mongoose.model('DevForgeCodeProject', DevForgeCodeProjectSchema)) : null;
+const DevForgeCodeFile = mongoose ? (mongoose.models.DevForgeCodeFile || mongoose.model('DevForgeCodeFile', DevForgeCodeFileSchema)) : null;
+const DevForgeCodeVersion = mongoose ? (mongoose.models.DevForgeCodeVersion || mongoose.model('DevForgeCodeVersion', DevForgeCodeVersionSchema)) : null;
+const DevForgeCodeChat = mongoose ? (mongoose.models.DevForgeCodeChat || mongoose.model('DevForgeCodeChat', DevForgeCodeChatSchema)) : null;
+
 let isMemoryFallback = false;
 
 const loadFromMongo = async () => {
@@ -165,7 +220,22 @@ const loadFromMongo = async () => {
     const idxs = await DevForgeIndexRecommendation.find({});
     memoryStore.index_recommendations = idxs.map(i => i.toObject());
 
-    console.log(`Loaded ${memoryStore.projects.length} active database projects from MongoDB Cluster (orphans purged).`);
+    const cProjs = await DevForgeCodeProject.find({}).sort({ createdAt: 1, _id: 1 });
+    memoryStore.code_projects = cProjs.map(p => ({
+      ...p.toObject(),
+      id: p.id !== undefined && p.id !== null ? p.id : String(p._id)
+    }));
+
+    const cFiles = await DevForgeCodeFile.find({});
+    memoryStore.code_files = cFiles.map(f => f.toObject());
+
+    const cVers = await DevForgeCodeVersion.find({});
+    memoryStore.code_versions = cVers.map(v => v.toObject());
+
+    const cChats = await DevForgeCodeChat.find({});
+    memoryStore.code_chats = cChats.map(c => c.toObject());
+
+    console.log(`Loaded ${memoryStore.projects.length} database projects and ${memoryStore.code_projects.length} code projects from MongoDB Cluster.`);
   } catch (err) {
     console.warn('Error loading initial data from MongoDB:', err.message);
   }
@@ -826,5 +896,14 @@ const handleMemoryQuery = async (text, params) => {
 module.exports = {
   initDb,
   query,
-  isPg: () => usePg
+  isPg: () => usePg,
+  memoryStore,
+  DevForgeCodeProject,
+  DevForgeCodeFile,
+  DevForgeCodeVersion,
+  DevForgeCodeChat,
+  DevForgeEntity,
+  DevForgeAttribute,
+  DevForgeRelationship,
+  DevForgeProject
 };

@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test tests/designer.test.js tests/ai_reviews.test.js"
+    "test": "node --test tests/designer.test.js tests/ai_reviews.test.js tests/code_module.test.js"
   },
   "dependencies": {
     "@google/genai": "^2.13.0",

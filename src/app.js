@@ -5,6 +5,7 @@ const projectRoutes = require('./routes/projectRoutes');
 const databaseRoutes = require('./routes/databaseRoutes');
 const versionRoutes = require('./routes/versionRoutes');
 const userRoutes = require('./routes/userRoutes');
+const codeProjectRoutes = require('./routes/codeProjectRoutes');
 const errorHandler = require('./middleware/errorMiddleware');
 
 const app = express();
@@ -22,7 +23,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.get('/api/health', (req, res) => {
   res.status(200).json({
     success: true,
-    module: 'DevForge AI - AI Database Designer',
+    module: 'DevForge AI - AI Database & AI Code Workspace',
     status: 'Operational',
     timestamp: new Date().toISOString()
   });
@@ -35,6 +36,7 @@ app.use('/api/database-projects', projectRoutes);
 app.use('/api/database', databaseRoutes);
 app.use('/api/versions', versionRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/code-projects', codeProjectRoutes);
 
 // 404 Route Handler
 app.use((req, res) => {
