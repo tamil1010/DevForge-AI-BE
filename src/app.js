@@ -5,6 +5,8 @@ const projectRoutes = require('./routes/projectRoutes');
 const databaseRoutes = require('./routes/databaseRoutes');
 const versionRoutes = require('./routes/versionRoutes');
 const userRoutes = require('./routes/userRoutes');
+const codeProjectRoutes = require('./routes/codeProjectRoutes');
+const codeArenaRoutes = require('./routes/codeArenaRoutes');
 const errorHandler = require('./middleware/errorMiddleware');
 
 const app = express();
@@ -35,6 +37,8 @@ app.use('/api/database-projects', projectRoutes);
 app.use('/api/database', databaseRoutes);
 app.use('/api/versions', versionRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/code-projects', codeProjectRoutes);
+app.use('/api/codearena', codeArenaRoutes);
 
 // 404 Route Handler
 app.use((req, res) => {
